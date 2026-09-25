@@ -37,5 +37,7 @@ Serves **https://cnd.homesang.pro**.
 3. `npm install` (node_modules is not cloned).
 
 ## Notes
-- This is a **build-safe baseline clone** — it still contains HomeSang code that Stage 1b prunes.
-- Local dev docs / daily notes are kept in the HomeSang repo's `docs/cnd-split/` for now.
+- Stage 1b done: HomeSang code pruned; this is now a CND-only app (see the tracker above).
+- **Local dev docs, daily/handover notes, setup guides, UAT** live in `docs/` in THIS repo
+  (gitignored — local only). Start with `docs/cnd-note <DD-MM-YY>.md` (latest handover) and
+  `docs/01-firebase-project-setup-LAO.md`.

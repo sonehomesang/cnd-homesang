@@ -47,3 +47,6 @@ app-example
 /ios
 /android
 firestore-debug.log
+
+# local-only docs: handover/daily notes, setup guides, UAT (never committed)
+docs/
