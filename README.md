@@ -53,13 +53,20 @@ Serves **https://cnd.homesang.pro**.
       (via the firebaseapp.com mirror; `.web.app` curl fails with QUIC on this machine): CND title,
       SPA rewrite `/cnd/admin`→200, hashed assets 200. `npm run deploy` = fresh build + hosting
       deploy. Does NOT touch cnd.homesang.pro (still on homesang-v2-prod).
-- [ ] **Stage 4b — custom-domain cutover**: (1) OLD project console `homesang-v2-prod` → Hosting →
-      remove custom domain `cnd.homesang.pro` (a domain lives on one site only); (2) NEW project
-      console `cnd-homesang` → Hosting → Add custom domain `cnd.homesang.pro`; (3) update DNS TXT
-      `hosting-site` from `homesang-v2-prod` → `cnd-homesang` (A stays 199.36.158.100). This is the
-      production switch. Then delete CND from `homesang-v2` (app/cnd, lib/cnd, components/cnd, 4 fn,
-      rules blocks, 3 reverse refs).
-- [ ] **Stage 5 — verify both prod + docs**.
+- [x] **Stage 4b — custom-domain cutover DONE (2026-09-25)**: removed `cnd.homesang.pro` from the
+      OLD `homesang-v2-prod` hosting, added it to `cnd-homesang` hosting (Quick setup = **CNAME**,
+      redirect UNchecked so it serves not redirects), and changed DNS: deleted A `cnd`→199.36.158.100
+      + TXT `hosting-site=homesang-v2-prod`, added **CNAME `cnd` → cnd-homesang.web.app**. DNS
+      verified (Google + Cloudflare see the CNAME; old TXT gone). Firebase Verify = green. Address
+      bar stays `cnd.homesang.pro` (CNAME is a DNS alias, not a redirect). `cnd.homesang.pro` now
+      serves the new standalone CND (title=CND, `/cnd/admin`→200); a few edges still returned the
+      Firebase "Site Not Found" 404 while the mapping + cert finished provisioning (normal, settles
+      within ~1h, up to 24h). Old cert (CN=homesang.pro, SAN incl. cnd.homesang.pro) stays valid
+      meanwhile.
+- [ ] **Stage 5 — remove CND from `homesang-v2` repo + verify both prod + docs**: delete app/cnd,
+      lib/cnd, components/cnd, the 4 CND functions, CND rules blocks, and the 3 reverse refs
+      (app/(tabs)/index+_layout, components/CndTranslations) from `D:/myApp/homesang-v2`. (Separate
+      repo — do in a homesang-v2 session.)
 
 ## ⚠️ Before running / deploying
 1. Put the real Firebase config (6 values) from the `cnd-homesang` project into `.env.local`
