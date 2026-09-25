@@ -47,12 +47,13 @@ if (!/id=["']hs-lao-font["']/i.test(html)) {
 // The SPA ships an empty #root, so crawlers + social scrapers see only this
 // static HTML. Give them a keyword-rich Lao title/description, Open-Graph +
 // Twitter cards (Line/Facebook link previews), JSON-LD, and a <noscript> block
-// listing the trades — so "ຊ່າງໄຟ / ຊ່າງປະປາ / ຊ່າງແອ …" searches can find the site.
+// listing the product lines — so "ວັດສະດຸ ກໍ່ສ້າງ / ເຄື່ອງໃຊ້ໄຟຟ້າ …" searches can find the store.
 // (Full per-category/per-tech SEO would need SSR/prerender — a separate project.)
-const SITE_URL = 'https://homesang.pro';
-const TRADES = 'ຊ່າງໄຟ, ຊ່າງປະປາ, ຊ່າງແອ, ຊ່າງກໍ່ສ້າງ, ຊ່າງໄມ້, ຊ່າງທາສີ, ຊ່າງເຫຼັກ, ຊ່າງເຊື່ອມ, ຊ່າງປູກະເບື້ອງ, ຊ່າງຫຼັງຄາ, ຊ່າງເຄື່ອງເຢັນ, ຊ່າງກະຈົກ, ຊ່າງຊ່ອມແປງ';
-const SEO_TITLE = 'ໂຮມຊ່າງ — ຫາຊ່າງໄຟ ຊ່າງປະປາ ຊ່າງແອ ຊ່າງກໍ່ສ້າງ ແລະ ຊື້ວັດສະດຸ | HomeSang';
-const SEO_DESC = 'ໂຮມຊ່າງ (HomeSang) ແພລດຟອມ ຫາຊ່າງ ມືອາຊີບ ໃນ ລາວ — ' + TRADES + ' ແລະ ອື່ນໆ. ໂພສງານ ຟຣີ ຮັບໃບສະເໜີລາຄາ ຈາກ ຊ່າງ ໃກ້ຕົວ, ຊື້ວັດສະດຸ ກໍ່ສ້າງ ຄົບ ໃນ ບ່ອນ ດຽວ.';
+const SITE_URL = 'https://cnd.homesang.pro';
+const BRAND = 'CND Home Hardware';
+const LINES = 'ວັດສະດຸ ກໍ່ສ້າງ, ເຄື່ອງໃຊ້ ໄຟຟ້າ, ອຸປະກອນ ໄຟຟ້າ, ອຸປະກອນ ປະປາ, ແອ, ສີ ທາເຮືອນ, ເຄື່ອງມື ຊ່າງ, ຮາດແວ';
+const SEO_TITLE = 'CND — ຮ້ານ ວັດສະດຸ ກໍ່ສ້າງ ແລະ ເຄື່ອງໃຊ້ໄຟຟ້າ ພ້ອມ ຊ່າງ ຕິດຕັ້ງ | ' + BRAND;
+const SEO_DESC = 'CND ຮ້ານ ຂາຍ ວັດສະດຸ ກໍ່ສ້າງ ແລະ ເຄື່ອງໃຊ້ ໄຟຟ້າ ໃນ ວຽງຈັນ — ' + LINES + '. ສັ່ງ ອອນລາຍ, ສົ່ງ ເຖິງ ບ້ານ, ມີ ຊ່າງ ຕິດຕັ້ງ ໃຫ້.';
 const enc = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // a) rewrite the default "<title>mobile</title>"
@@ -63,18 +64,18 @@ if (!/<title>/i.test(html)) html = html.replace(/<\/head>/i, '  <title>' + enc(S
 if (!/name=["']description["']/i.test(html)) {
   const ld = {
     '@context': 'https://schema.org', '@type': 'WebSite',
-    name: 'ໂຮມຊ່າງ HomeSang', url: SITE_URL, inLanguage: 'lo',
+    name: BRAND, url: SITE_URL, inLanguage: 'lo',
     description: SEO_DESC,
-    publisher: { '@type': 'Organization', name: 'ໂຮມຊ່າງ HomeSang', url: SITE_URL, logo: SITE_URL + '/pwa-512.png' },
+    publisher: { '@type': 'Organization', name: BRAND, url: SITE_URL, logo: SITE_URL + '/pwa-512.png' },
     potentialAction: { '@type': 'SearchAction', target: SITE_URL + '/?q={q}', 'query-input': 'required name=q' },
   };
   const seo = [
     '<meta name="description" content="' + enc(SEO_DESC) + '" />',
-    '<meta name="keywords" content="' + enc('ຫາຊ່າງ, ຫາຊ່າງ ໃກ້ຕົວ, ຊ່າງ ລາວ, ຊ່າງ ວຽງຈັນ, ໂພສງານ ຊ່າງ, ' + TRADES + ', ວັດສະດຸ ກໍ່ສ້າງ, ຮ້ານ ວັດສະດຸ, ອຸປະກອນ ໄຟຟ້າ, ອຸປະກອນ ປະປາ, ສີ ທາເຮືອນ, ເຄື່ອງມື ຊ່າງ, ຊື້ ວັດສະດຸ ອອນລາຍ, ໂຮມຊ່າງ, HomeSang, find technician laos, hire electrician plumber aircon laos, buy construction materials laos') + '" />',
+    '<meta name="keywords" content="' + enc('CND, ' + LINES + ', ຮ້ານ ວັດສະດຸ, ຮ້ານ ວັດສະດຸ ວຽງຈັນ, ຊື້ ວັດສະດຸ ອອນລາຍ, ຊ່າງ ຕິດຕັ້ງ, hardware store laos, buy construction materials vientiane, electrical appliances laos') + '" />',
     '<meta name="robots" content="index, follow" />',
     '<link rel="canonical" href="' + SITE_URL + '/" />',
     '<meta property="og:type" content="website" />',
-    '<meta property="og:site_name" content="ໂຮມຊ່າງ HomeSang" />',
+    '<meta property="og:site_name" content="' + BRAND + '" />',
     '<meta property="og:title" content="' + enc(SEO_TITLE) + '" />',
     '<meta property="og:description" content="' + enc(SEO_DESC) + '" />',
     '<meta property="og:url" content="' + SITE_URL + '/" />',
@@ -102,14 +103,14 @@ try {
 // b) web app manifest (one 512 icon serves both slots; Firebase serves this
 //    physical file before the SPA rewrite kicks in)
 const manifest = {
-  name: 'HomeSang ໂຮມຊ່າງ',
-  short_name: 'ໂຮມຊ່າງ',
-  description: 'ຫາຊ່າງ · ຊື້ວັດສະດຸ · ຄົບ ໃນ ບ່ອນ ດຽວ',
+  name: 'CND Home Hardware',
+  short_name: 'CND',
+  description: 'ວັດສະດຸ ກໍ່ສ້າງ · ເຄື່ອງໃຊ້ໄຟຟ້າ · ຊ່າງ ຕິດຕັ້ງ',
   start_url: '/',
   scope: '/',
   display: 'standalone',
   background_color: '#ffffff',
-  theme_color: '#0066CC',
+  theme_color: '#E8551E',
   lang: 'lo',
   icons: [
     { src: '/pwa-512.png', sizes: '192x192 512x512', type: 'image/png', purpose: 'any' },
@@ -133,25 +134,23 @@ fs.writeFileSync(path.join(dist, 'sw.js'), sw);
 if (!/rel=["']manifest["']/i.test(html)) {
   const head = [
     '<link rel="manifest" href="/manifest.webmanifest" />',
-    '<meta name="theme-color" content="#0066CC" />',
+    '<meta name="theme-color" content="#E8551E" />',
     '<link rel="apple-touch-icon" href="/pwa-512.png" />',
     '<meta name="apple-mobile-web-app-capable" content="yes" />',
     '<meta name="apple-mobile-web-app-status-bar-style" content="default" />',
-    '<meta name="apple-mobile-web-app-title" content="ໂຮມຊ່າງ" />',
+    '<meta name="apple-mobile-web-app-title" content="CND" />',
     "<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/sw.js').catch(function(){});});}</script>",
   ].join('\n    ');
   html = html.replace(/<\/head>/i, '    ' + head + '\n  </head>');
 }
 
-// d2) pre-boot subdomain routing — mkplan.* is the MK Plan marketing platform.
-//     Rewrite the URL to /mk BEFORE the SPA boots (via history.replaceState, no
-//     reload) so expo-router initializes directly on /mk. Doing it here — rather
-//     than a client-side router.replace in _layout — avoids the navigator-mount
-//     race that otherwise leaves the subdomain sitting on the home screen. Only
-//     fires on the subdomain root; never touches homesang.pro.
+// d2) pre-boot route alias — /admin → /cnd/admin BEFORE the SPA boots (via
+//     history.replaceState, no reload), so expo-router initializes directly on
+//     the admin screen. Doing it here avoids the navigator-mount race of a
+//     client-side router.replace in _layout.
 if (!/id="hs-subdomain-route"/.test(html)) {
   const routeScript =
-    '<script id="hs-subdomain-route">(function(){try{var h=location.hostname,p=location.pathname;if(/^mkplan\\./i.test(h)){if(p===\'/\'||p===\'\')history.replaceState(null,\'\',\'/mk\'+location.search+location.hash);}else if(/^cnd\\./i.test(h)){if(p===\'/admin\'||p.indexOf(\'/admin/\')===0)history.replaceState(null,\'\',\'/cnd/admin\');}}catch(e){}})();</script>';
+    '<script id="hs-subdomain-route">(function(){try{var p=location.pathname;if(p===\'/admin\'||p.indexOf(\'/admin/\')===0)history.replaceState(null,\'\',\'/cnd/admin\');}catch(e){}})();</script>';
   html = html.replace(/<head[^>]*>/i, function (m) { return m + '\n    ' + routeScript; });
 }
 
@@ -163,8 +162,8 @@ if (!/id="hs-subdomain-route"/.test(html)) {
 if (!/id="hs-splash"/.test(html)) {
   const splash =
     '<div id="hs-splash" style="position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#ffffff;font-family:\'Phetsarath OT\',system-ui,\'Noto Sans Lao\',sans-serif;">' +
-      '<div style="font-size:34px;font-weight:800;letter-spacing:.5px;"><span style="color:#0066CC;">ໂຮມ</span><span style="color:#F47B20;">ຊ່າງ</span></div>' +
-      '<div style="margin-top:18px;width:34px;height:34px;border:3px solid #e6eef7;border-top-color:#0066CC;border-radius:50%;animation:hsspin .8s linear infinite;"></div>' +
+      '<div style="font-size:38px;font-weight:900;letter-spacing:1px;color:#2B3A4A;">C<span style="color:#E8551E;">N</span>D</div>' +
+      '<div style="margin-top:18px;width:34px;height:34px;border:3px solid #e6eef7;border-top-color:#E8551E;border-radius:50%;animation:hsspin .8s linear infinite;"></div>' +
       '<style>@keyframes hsspin{to{transform:rotate(360deg)}}</style>' +
     '</div>' +
     "<script>(function(){var s=document.getElementById('hs-splash');if(!s)return;var o;function go(){if(s&&s.parentNode)s.parentNode.removeChild(s);if(o)o.disconnect();}function init(){var r=document.getElementById('root');if(r){try{o=new MutationObserver(function(){if(r.childNodes.length>0)go();});o.observe(r,{childList:true});}catch(e){}if(r.childNodes.length>0)go();}setTimeout(go,10000);}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();})();</script>";
@@ -176,12 +175,12 @@ if (!/id="hs-splash"/.test(html)) {
 if (!/id="seo-noscript"/.test(html)) {
   const ns =
     '<noscript id="seo-noscript"><div>' +
-      '<h1>ໂຮມຊ່າງ HomeSang — ຫາຊ່າງ ມືອາຊີບ ໃນ ລາວ</h1>' +
+      '<h1>CND — ຮ້ານ ວັດສະດຸ ກໍ່ສ້າງ ແລະ ເຄື່ອງໃຊ້ໄຟຟ້າ</h1>' +
       '<p>' + SEO_DESC + '</p>' +
-      '<h2>ປະເພດ ຊ່າງ ທີ່ ຫາ ໄດ້</h2><ul>' +
-      TRADES.split(', ').map(function (x) { return '<li>' + x + '</li>'; }).join('') +
+      '<h2>ສິນຄ້າ ແລະ ບໍລິການ</h2><ul>' +
+      LINES.split(', ').map(function (x) { return '<li>' + x + '</li>'; }).join('') +
       '</ul>' +
-      '<p>ໂພສງານ ຟຣີ · ຮັບໃບສະເໜີລາຄາ · ຊື້ວັດສະດຸ ກໍ່ສ້າງ · ' + SITE_URL + '</p>' +
+      '<p>ສັ່ງ ອອນລາຍ · ສົ່ງ ເຖິງ ບ້ານ · ຊ່າງ ຕິດຕັ້ງ · ' + SITE_URL + '</p>' +
     '</div></noscript>';
   html = html.replace(/<body[^>]*>/i, function (m) { return m + ns; });
 }

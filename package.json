@@ -8,7 +8,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "build:web": "node scripts/stamp-build.js && set \"NODE_OPTIONS=--max-old-space-size=4096\" && expo export --platform web --max-workers 2 && node scripts/patch-html.js && node scripts/gen-seo-pages.js",
+    "build:web": "node scripts/stamp-build.js && set \"NODE_OPTIONS=--max-old-space-size=4096\" && expo export --platform web --clear --max-workers 2 && node scripts/patch-html.js",
     "deploy": "npm run build:web && firebase deploy --only hosting --project cnd-homesang",
     "deploy:functions": "cd functions && npm run build && cd .. && set \"FUNCTIONS_DISCOVERY_TIMEOUT=120\" && firebase deploy --only functions --project cnd-homesang",
     "deploy:rules": "firebase deploy --only firestore:rules --project cnd-homesang",
