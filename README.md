@@ -26,11 +26,17 @@ Serves **https://cnd.homesang.pro**.
       pruned (Stage 2). Runtime not yet verified (needs real Firebase config).
 - [x] **Stage 2 — backend (functions)**: `functions/src/index.ts` 1932→589 lines — kept 9
       exports (5 OTP over Twilio + 4 CND triggers) + their helpers; removed ~24 HomeSang
-      functions. functions build (tsc) clean. **firestore.rules kept FULL on purpose**
-      (superset): CND reuses ~24 shared collections via kept shared libs, so pruning rules
-      would deny them; rules for HomeSang-only collections that won't exist here are no-ops
-      (no security downside). Trim later after runtime verify. Hosting not set up yet.
-- [ ] **Stage 2b (later) — hosting + optional rules trim** after runtime verification.
+      functions. functions build (tsc) clean. Hosting not set up yet.
+- [x] **Stage 2a — firestore.rules trim (CND + shared only)**: 1243→614 lines, 112→48 match
+      blocks (23 `cnd*` + 25 shared that CND client code actually reads: users/userCards/
+      techContact/techCards/userGroups/translations/settings/secureConfig/otpCodes/referrals/
+      auditLogs/errorLogs/userActivity/riders/deliveryTasks/jobs/bids/products/orders/
+      walletTransactions/techApplications/techQuiz*). Removed 64 HomeSang/MK-Plan/B2B-org/
+      marketplace-social blocks + 8 now-dead helpers. Keep set derived from a client-code grep
+      of every `collection()/doc()` ref (rules only govern the client; functions use admin SDK
+      which bypasses them). Verified: emulator compiles + `npm run test:rules:cnd` 61/0.
+      **Not yet deployed** — deploy with `npm run deploy:rules` after runtime verify.
+- [ ] **Stage 2b (later) — hosting** after runtime verification.
 - [ ] **Stage 3 — data**: re-seed mock into the new project (discard old test order CND-20017).
 - [ ] **Stage 4 — cutover**: point `cnd.homesang.pro` at the new hosting; delete CND from `homesang-v2`.
 - [ ] **Stage 5 — verify + docs**.

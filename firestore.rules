@@ -26,18 +26,6 @@ service cloud.firestore {
     function cndStaffAny() {
       return isSignedIn() && request.auth.token.get('cnd', {}).get('role', '') != '';
     }
-    // marketing team — the 'marketing' role (MK Plan platform) OR any admin.
-    function isMarketing() {
-      return isSignedIn() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        ('marketing' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('roles', []) || isAdmin());
-    }
-    // caller is a member of the given company/org (B2B multi-building access)
-    function isOrgMember(orgId) {
-      return isSignedIn() && orgId != null
-        && exists(/databases/$(database)/documents/orgs/$(orgId))
-        && request.auth.uid in get(/databases/$(database)/documents/orgs/$(orgId)).data.get('memberUids', []);
-    }
     // Super admin only (isSuperAdmin flag or legacy 'admin' role) — may delete
     function isSuperAdmin() {
       return isSignedIn() &&
@@ -67,45 +55,6 @@ service cloud.firestore {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/jobs/$(jobId)) &&
         get(/databases/$(database)/documents/jobs/$(jobId)).data.customerId == request.auth.uid;
-    }
-    // Points the server says this user has EARNED (0 when they have no ledger
-    // yet) — the ceiling for how much they may ever commit to redemptions.
-    function loyaltyEarned(uid) {
-      return exists(/databases/$(database)/documents/loyaltyLedger/$(uid))
-        ? get(/databases/$(database)/documents/loyaltyLedger/$(uid)).data.get('earned', 0)
-        : 0;
-    }
-    // May the caller view/record a site's dossier? Reused to scope its assets:
-    // admin, the site owner, or anyone in the site's CURRENT sharedWith list.
-    // (get() by the fixed siteId a query filters on — the standard way to
-    // authorize a by-siteId list without exposing every asset to all users.)
-    function siteAllows(sid) {
-      return isAdmin() || (
-        exists(/databases/$(database)/documents/sites/$(sid)) && (
-          isOwner(get(/databases/$(database)/documents/sites/$(sid)).data.ownerId) ||
-          (isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/sites/$(sid)).data.get('sharedWith', []))
-        )
-      );
-    }
-
-    // review integrity: true when `uid` is one of a job's two parties — the
-    // customer or the assigned technician. Used to require that a reviewer was
-    // actually party to the job AND that the ratee is the OTHER party.
-    function jobParty(jid, uid) {
-      return exists(/databases/$(database)/documents/jobs/$(jid)) &&
-        (get(/databases/$(database)/documents/jobs/$(jid)).data.customerId == uid ||
-         get(/databases/$(database)/documents/jobs/$(jid)).data.get('assignedProviderId', '') == uid);
-    }
-    function taskCustomer(tid) {
-      return get(/databases/$(database)/documents/deliveryTasks/$(tid)).data.customerId;
-    }
-    function taskRider(tid) {
-      return get(/databases/$(database)/documents/deliveryTasks/$(tid)).data.get('assignedRiderId', '');
-    }
-    // true when the server recorded that `uid` bought `productId`. The index doc
-    // purchases/{productId}_{uid} is written admin-side by onOrderItemCreated.
-    function purchased(productId, uid) {
-      return exists(/databases/$(database)/documents/purchases/$(productId + '_' + uid));
     }
 
     // ============ USERS ============
@@ -172,21 +121,6 @@ service cloud.firestore {
       allow delete: if isOwner(uid) || isSuperAdmin();
     }
 
-    // ============ CATEGORIES (public read) ============
-    match /categories/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    match /roles/{id} {
-      // signed-in only — the RBAC/permission matrix is app-internal structure, no
-      // reason to expose it to anonymous recon
-      allow read: if isSignedIn();
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
     // account-type taxonomy (5 groups + sub-types): public read, admin write
     match /userGroups/{id} {
       allow read: if true;
@@ -194,64 +128,7 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
-    match /units/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    match /platformRates/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    match /banners/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // knowledge / safety video clips (Learn & Safety modules): public read, admin write
-    match /learnClips/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    match /menuItems/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
     match /translations/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    match /appSettings/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    match /bankAccounts/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // Slice 2 — pluggable payment / logistics providers: public read (checkout
-    // shows enabled ones), admin write.
-    match /paymentProviders/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    match /logisticsProviders/{id} {
       allow read: if true;
       allow create, update: if isAdmin();
       allow delete: if isSuperAdmin();
@@ -381,54 +258,6 @@ service cloud.firestore {
       allow delete: if isOwner(resource.data.customerId) || isSuperAdmin();
     }
 
-    // Public, privacy-safe projection of the job feed (Explore + map for guests).
-    // Written ONLY by the onJobWritten Cloud Function — never carries the poster's
-    // name, full address, exact coordinates, or phones typed into free text.
-    match /jobCards/{id} {
-      allow read: if true;
-      allow write: if false;
-    }
-
-    match /quotations/{id} {
-      allow read: if isSignedIn();
-      allow create: if isOwner(request.resource.data.technicianId);
-      allow update: if isOwner(resource.data.technicianId) || isAdmin();
-    }
-
-    // ============ BUILDING & ASSET REGISTRY ============
-    // Site Dossier records. Detailed data is PRIVATE, gated by an owner-managed
-    // permission list: owner + admin always; anyone the owner authorized via
-    // sharedWith (techs working there, family...). A shared viewer may RECORD
-    // (add rooms/detail) but never re-grant access or change ownership.
-    match /sites/{id} {
-      allow read: if resource == null || isAdmin()
-        || isOwner(resource.data.ownerId)
-        || (isSignedIn() && request.auth.uid in resource.data.get('sharedWith', []))
-        || isOrgMember(resource.data.get('orgId', null));
-      // admin creates (decision #1); owner may create own — future role expansion
-      allow create: if isAdmin() || isOwner(request.resource.data.ownerId);
-      allow update: if isAdmin() || isOwner(resource.data.ownerId)
-        || (isSignedIn() && request.auth.uid in resource.data.get('sharedWith', [])
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerId', 'sharedWith', 'createdBy']));
-      allow delete: if isSuperAdmin() || isOwner(resource.data.ownerId);
-    }
-
-    // Asset register (Phase 3): appliances/equipment tied to a site. Assets hold
-    // PRIVATE data (serials, per-category fields, parameter readings, service
-    // history), so access is scoped to the PARENT SITE's viewers via siteAllows()
-    // — not `isSignedIn()`. The app lists a site's assets with `where siteId==X`,
-    // and siteAllows(resource.data.siteId) get()s that one fixed site, so the
-    // by-siteId list is authorized without exposing every asset to all users.
-    // Reading the site's live sharedWith also means revoking a site viewer
-    // immediately revokes their asset access (no stale per-asset copy).
-    match /assets/{id} {
-      allow read: if siteAllows(resource.data.siteId);
-      allow create: if siteAllows(request.resource.data.siteId);
-      allow update: if siteAllows(resource.data.siteId)
-        && request.resource.data.siteId == resource.data.siteId; // can't move an asset to another site to dodge the check
-      allow delete: if isSuperAdmin() || isOwner(resource.data.ownerId);
-    }
-
     match /bids/{id} {
       allow read: if isSignedIn();
       allow create: if isOwner(request.resource.data.technicianId);
@@ -447,100 +276,6 @@ service cloud.firestore {
       }
     }
 
-    // jobWorkflows — legacy/unused in v2; lock to admin (was open to any signed-in)
-    match /jobWorkflows/{id} {
-      allow read: if isSignedIn();
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // job progress updates — only the job owner or the assigned technician may
-    // post; any signed-in user may read (UI further scopes who sees the feed)
-    match /jobUpdates/{id} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() &&
-        request.resource.data.by == request.auth.uid &&
-        (
-          get(/databases/$(database)/documents/jobs/$(request.resource.data.jobId)).data.customerId == request.auth.uid ||
-          get(/databases/$(database)/documents/jobs/$(request.resource.data.jobId)).data.assignedProviderId == request.auth.uid
-        );
-      allow update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // ============ COMMUNITY (ໂຮມເພື່ອນ) ============
-    match /posts/{id} {
-      allow read: if true; // public browse
-      allow create: if isOwner(request.resource.data.authorId) || isAdmin();
-      // author/admin edit anything; any signed-in user may only bump counters
-      allow update: if isOwner(resource.data.authorId) || isAdmin() ||
-                       (isSignedIn() &&
-                        request.resource.data.diff(resource.data).affectedKeys()
-                          .hasOnly(['likeCount', 'commentCount']));
-      allow delete: if isOwner(resource.data.authorId) || isSuperAdmin();
-    }
-
-    match /comments/{id} {
-      allow read: if true;
-      allow create: if isOwner(request.resource.data.authorId);
-      allow update: if isOwner(resource.data.authorId) || isAdmin();
-      allow delete: if isOwner(resource.data.authorId) || isSuperAdmin();
-    }
-
-    match /postLikes/{id} {
-      allow read: if isSignedIn();
-      allow create: if isOwner(request.resource.data.uid);
-      allow delete: if isOwner(resource.data.uid);
-    }
-
-    // Y2 Slice B — shoppable short-video reels (public feed)
-    match /reels/{id} {
-      allow read: if true;
-      allow create: if isOwner(request.resource.data.authorId) || isAdmin();
-      // author/admin edit anything; any signed-in user may only bump the
-      // denormalized like/view counters
-      allow update: if isOwner(resource.data.authorId) || isAdmin() ||
-                       (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likeCount'])) ||
-                       (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount']));
-      allow delete: if isOwner(resource.data.authorId) || isSuperAdmin();
-    }
-    match /reelLikes/{id} {
-      allow read: if isSignedIn();
-      allow create: if isOwner(request.resource.data.uid);
-      allow delete: if isOwner(resource.data.uid);
-    }
-
-    // Y3 Slice A — group buy campaigns (public). The owning shop (or admin)
-    // creates/edits/closes; any signed-in user may JOIN by adding ONLY their own
-    // uid to joinerIds (and, when that join reaches the target, flip status to
-    // 'unlocked' — but only if the real joiner count actually meets the target,
-    // so a fake unlock is impossible). Price/target/deadline stay immutable to joiners.
-    match /groupBuys/{id} {
-      allow read: if true;
-      allow create: if isAdmin() || ownsShop(request.resource.data.shopId);
-      allow update: if isAdmin() || ownsShop(resource.data.shopId)
-        || (isSignedIn()
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinerIds', 'status'])
-            // only additions to joiners, and the sole addition is the caller's own uid
-            && request.resource.data.joinerIds.hasAll(resource.data.joinerIds)
-            && resource.data.joinerIds.concat([request.auth.uid]).hasAll(request.resource.data.joinerIds)
-            && request.auth.uid in request.resource.data.joinerIds
-            // status may only become 'unlocked' when the real count meets the target
-            && (request.resource.data.status == resource.data.status
-                || request.resource.data.status == 'open'
-                || (request.resource.data.status == 'unlocked'
-                    && request.resource.data.joinerIds.size() >= resource.data.target)));
-      allow delete: if isAdmin() || ownsShop(resource.data.shopId);
-    }
-
-    // ============ SHOPS / PRODUCTS / ORDERS ============
-    match /shops/{id} {
-      allow read: if true;
-      allow create: if isSignedIn();
-      allow update: if isOwner(resource.data.ownerId) || isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
     match /products/{id} {
       allow read: if true;
       // only the owning shop (or admin) may create/edit a product;
@@ -552,31 +287,6 @@ service cloud.firestore {
       // client is not trusted to write them (prevents fake stock/sales/ratings).
       allow update: if ownsShop(resource.data.shopId) || isAdmin();
       allow delete: if isSuperAdmin();
-    }
-
-    // product reviews — public read; buyer creates own; author/admin manage
-    match /productReviews/{id} {
-      allow read: if true;
-      // ONE review per product per rater, enforced through a deterministic id.
-      // With random ids a client could loop hundreds of 1-star reviews at a
-      // rival's product and the server-side average (onProductReviewWritten)
-      // would faithfully drop to 1.0.
-      // VERIFIED PURCHASE: the rater must have actually bought this product —
-      // the purchases/{productId}_{rater} index is written server-side on order,
-      // and excludes the selling shop's owner (so no self-review of own listing).
-      allow create: if isOwner(request.resource.data.raterId)
-        && id == request.resource.data.productId + '_' + request.resource.data.raterId
-        && purchased(request.resource.data.productId, request.resource.data.raterId);
-      allow update: if isOwner(resource.data.raterId) || isAdmin();
-      allow delete: if isOwner(resource.data.raterId) || isSuperAdmin();
-    }
-
-    // verified-purchase index (purchases/{productId}_{buyerId}) — the proof a
-    // productReviews create is gated on. Written ONLY by the onOrderItemCreated
-    // Cloud Function (admin SDK bypasses rules); clients can never forge one.
-    match /purchases/{id} {
-      allow read: if isAdmin();
-      allow write: if false;
     }
 
     match /orders/{id} {
@@ -634,140 +344,6 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
-    // order line items — scoped to the order's customer, the selling shop's
-    // owner, or admin (was open to any signed-in user)
-    match /orderItems/{id} {
-      allow read: if isSignedIn() && (
-        isAdmin() ||
-        get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.customerId == request.auth.uid ||
-        ownsShop(get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.shopId)
-      );
-      allow create: if isSignedIn() &&
-        get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.customerId == request.auth.uid;
-      allow update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // refund / return claims — customer creates own, admin resolves
-    match /claims/{id} {
-      allow read: if isOwner(resource.data.customerId) || isAdmin();
-      allow create: if isOwner(request.resource.data.customerId) || isAdmin();
-      allow update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // job disputes — a party raises, admin resolves
-    match /disputes/{id} {
-      // only the two parties (raiser + counterparty) and admin may read — a
-      // dispute names both people, the job and the complaint text. (was
-      // isSignedIn(): any logged-in user could list every dispute.) The
-      // by-jobId watch returns only disputes on that job, where the viewer is a
-      // party, so it still works for the people actually involved.
-      allow read: if isAdmin()
-        || isOwner(resource.data.raisedBy)
-        || isOwner(resource.data.get('counterpartyId', ''));
-      allow create: if isOwner(request.resource.data.raisedBy) || isAdmin();
-      allow update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // ============ COMMUNICATION ============
-    match /conversations/{id} {
-      // resource == null lets getOrCreateConversation check a not-yet-created
-      // conversation (get on a missing doc) before creating it
-      allow read: if isSignedIn() && (resource == null || request.auth.uid in resource.data.participants);
-      allow create: if isSignedIn() && request.auth.uid in request.resource.data.participants;
-      // A participant may update the thread's denormalized preview fields only.
-      // `participants` must stay immutable: every read rule here and on
-      // /messages keys off it, so rewriting it would hand the whole history to
-      // an outsider and cut the other party out of their own conversation.
-      allow update: if isSignedIn() && request.auth.uid in resource.data.participants
-        && request.resource.data.participants == resource.data.participants
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['lastMessage', 'lastSenderId', 'lastAt', 'lastReadAt', 'updatedAt',
-                       'names', 'images', 'jobId', 'jobTitle']);
-    }
-
-    match /messages/{id} {
-      // only conversation participants can read; sender creates own messages
-      allow read: if isSignedIn() &&
-        request.auth.uid in
-          get(/databases/$(database)/documents/conversations/$(resource.data.conversationId)).data.participants;
-      // The sender must also BE a participant of the target conversation.
-      // Conversation ids are derivable ([a,b].sort().join('_')) from uids anyone
-      // can read, so without this check any signed-in user could inject a
-      // message into a stranger's private thread — where it renders as if it
-      // came from the other party (impersonation / scam).
-      allow create: if isOwner(request.resource.data.senderId)
-        && request.auth.uid in
-             get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants;
-    }
-
-    match /notifications/{id} {
-      // recipient-only read/update. Create is allowed for any signed-in user (an
-      // action by one user notifies another), but hardened against spoofing: the
-      // link must be an INTERNAL app route (blocks external phishing URLs and
-      // protocol-relative //host links) and the title is length-capped. Admin
-      // (broadcasts) bypass. Full server-side creation is a future hardening.
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      // Clients no longer write here: user-to-user notifications go through the
-      // sendNotification callable, which stamps the true sender, rejects external
-      // links and rate-limits per sender (a notification becomes a real push, so
-      // direct client writes let anyone spoof an official HomeSang alert to every
-      // user). Admin keeps the direct path for broadcasts; the callable and the
-      // other Cloud Functions use the admin SDK, which bypasses rules.
-      allow create: if isAdmin();
-      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
-    }
-
-    // favorites — private to the owner (allow get on a not-yet-existing doc so toggle can check)
-    match /favorites/{id} {
-      allow read: if isSignedIn() && (resource == null || resource.data.uid == request.auth.uid);
-      allow create: if isOwner(request.resource.data.uid);
-      allow delete: if isOwner(resource.data.uid);
-    }
-
-    // ============ REVIEWS ============
-    match /reviews/{id} {
-      allow read: if true;
-      // ONE review per job (or per delivery task) per rater — deterministic id,
-      // same anti-padding reason as productReviews. Job reviews are keyed
-      // `${jobId}_${raterId}`, rider reviews `${taskId}_${raterId}`.
-      // VERIFIED + NO SELF-REVIEW: the rater must be a party to the job/task and
-      // the ratee must be the OTHER party — you can't rate a job you weren't in,
-      // and you can't rate yourself.
-      allow create: if isOwner(request.resource.data.raterId)
-        && request.resource.data.raterId != request.resource.data.rateeId
-        && (
-          (request.resource.data.get('jobId', '') != ''
-            && id == request.resource.data.jobId + '_' + request.resource.data.raterId
-            && jobParty(request.resource.data.jobId, request.resource.data.raterId)
-            && jobParty(request.resource.data.jobId, request.resource.data.rateeId))
-          || (request.resource.data.get('taskId', '') != ''
-            && id == request.resource.data.taskId + '_' + request.resource.data.raterId
-            && exists(/databases/$(database)/documents/deliveryTasks/$(request.resource.data.taskId))
-            && request.resource.data.raterId == taskCustomer(request.resource.data.taskId)
-            && request.resource.data.rateeId == taskRider(request.resource.data.taskId))
-        );
-      allow update: if isOwner(resource.data.raterId) || isAdmin();
-      allow delete: if isOwner(resource.data.raterId) || isSuperAdmin();
-    }
-
-    // ============ MONEY ============
-    match /payments/{id} {
-      // owner + admin only (was isSignedIn(): any user could list all payments)
-      allow read: if isOwner(resource.data.userId) || isAdmin();
-      // a user may only create their own payment record; admin overrides
-      allow create: if isOwner(request.resource.data.userId) || isAdmin();
-      allow update: if isAdmin();
-    }
-
-    match /commissions/{id} {
-      allow read: if isAdmin();
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
     // technician earnings/withdrawals: owner reads own + creates withdrawal
     // requests; only admin approves/changes status.
     match /walletTransactions/{id} {
@@ -785,70 +361,6 @@ service cloud.firestore {
             && request.resource.data.amount > 0
             && request.resource.data.get('status', 'pending') == 'pending');
       allow update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // CUSTOMER wallet (spendable balance) — separate from the technician
-    // earnings wallet above. Balance = Σ verified topups − Σ spends.
-    match /walletTopups/{id} {
-      allow read: if isOwner(resource.data.uid) || isAdmin();
-      // a customer may request a PENDING top-up for THEMSELVES (positive amount,
-      // not admin-flagged); only an admin may create a pre-verified / direct one.
-      allow create: if isAdmin()
-        || (isOwner(request.resource.data.uid)
-            && request.resource.data.get('status', 'pending') == 'pending'
-            && request.resource.data.amount is number
-            && request.resource.data.amount > 0
-            && !('byAdmin' in request.resource.data));
-      allow update: if isAdmin();   // verify / reject
-      allow delete: if isSuperAdmin();
-    }
-    match /walletSpends/{id} {
-      allow read: if isOwner(resource.data.uid) || isAdmin();
-      // written ONLY by the spendWallet Cloud Function (admin SDK) — a client can
-      // never create a spend (which would let it fake having paid from balance).
-      allow write: if false;
-    }
-
-    match /servicePricing/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // reference price catalog (materials + labor "ລາຄາກາງ"): public read, admin write
-    match /priceCatalog/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // BOM templates (preset cost bundles): public read, admin write
-    match /bomTemplates/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // per-technician full-quote presets — each tech manages only their own
-    match /quoteTemplates/{id} {
-      allow read: if isSignedIn();
-      allow create: if isOwner(request.resource.data.ownerId);
-      allow update, delete: if isOwner(resource.data.ownerId) || isAdmin();
-    }
-
-    // HomeSang per-category completion-inspection standards (checklist + warranty)
-    match /inspectionTemplates/{id} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    // mid-job change-orders: assigned tech proposes, job owner approves/rejects
-    match /jobVariations/{id} {
-      allow read: if isSignedIn();
-      allow create: if isOwner(request.resource.data.techId);
-      allow update: if isAdmin() ||
-        isOwner(get(/databases/$(database)/documents/jobs/$(resource.data.jobId)).data.customerId);
       allow delete: if isSuperAdmin();
     }
 
@@ -880,48 +392,6 @@ service cloud.firestore {
     match /translations/{key} {
       allow read: if true;
       allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    // ============ MEMBERSHIPS ============
-    match /membershipPlans/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    match /subscriptions/{id} {
-      // owner + admin only (was isSignedIn(): any user could list all subs)
-      allow read: if isOwner(resource.data.userId) || isAdmin();
-      allow create: if isOwner(request.resource.data.userId);
-      allow update: if isAdmin();
-    }
-
-    // ============ LOYALTY POINTS ============
-    // Server-held earning ledger: written ONLY by the onOrderLoyaltyLedger
-    // Cloud Function (admin SDK bypasses rules), so a client can never inflate
-    // the points it is allowed to spend.
-    match /loyaltyLedger/{uid} {
-      allow read: if isOwner(uid) || isAdmin();
-      allow write: if false;
-    }
-
-    // Running total of points the user has actually committed. The client
-    // increments this inside a TRANSACTION at checkout; the ceiling below is what
-    // makes redemption safe — rules cannot sum across orders, but they can
-    // compare one running total against the server-written ledger. Two
-    // simultaneous checkouts contend on this single doc, so the second one fails
-    // instead of spending the same points twice. Monotonic (never decreases).
-    match /loyaltySpend/{uid} {
-      allow read: if isOwner(uid) || isAdmin();
-      allow create: if isOwner(uid)
-        && request.resource.data.spent is number
-        && request.resource.data.spent >= 0
-        && request.resource.data.spent <= loyaltyEarned(uid);
-      allow update: if isOwner(uid)
-        && request.resource.data.spent is number
-        && request.resource.data.spent >= resource.data.spent
-        && request.resource.data.spent <= loyaltyEarned(uid);
       allow delete: if isSuperAdmin();
     }
 
@@ -964,89 +434,6 @@ service cloud.firestore {
       allow read: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
       allow create: if isSignedIn();
       allow update, delete: if isSuperAdmin();
-    }
-
-    match /trialUsers/{id} {
-      allow read: if isAdmin();
-      allow create, update: if isAdmin();
-      allow delete: if isSuperAdmin();
-    }
-
-    match /surveyTemplates/{id} {
-      allow read: if isSignedIn();
-      allow create: if isAdmin();
-      // admin edits anything; any signed-in user (technician) may only bump
-      // usage / rating aggregate fields after using a template in a quote
-      allow update: if isAdmin() ||
-                       (isSignedIn() &&
-                        request.resource.data.diff(resource.data).affectedKeys()
-                          .hasOnly(['usageCount', 'rating', 'ratingCount', 'updatedAt']));
-      allow delete: if isSuperAdmin();
-    }
-
-    match /deliveryAddresses/{id} {
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isOwner(request.resource.data.userId);
-      allow update, delete: if isOwner(resource.data.userId);
-    }
-
-    // ===== MK Plan — internal Marketing Platform (marketing role or admin) =====
-    // Content calendar. Later mk* collections (scripts/assets/partners/campaigns)
-    // follow the same gate.
-    match /mkContent/{id} {
-      allow read, create, update: if isMarketing();
-      allow delete: if isMarketing();
-    }
-    match /mkScripts/{id} {
-      allow read, create, update, delete: if isMarketing();
-    }
-    match /mkAssets/{id} {
-      allow read, create, update, delete: if isMarketing();
-    }
-    match /mkPartners/{id} {
-      allow read, create, update, delete: if isMarketing();
-    }
-    match /mkCampaigns/{id} {
-      allow read, create, update, delete: if isMarketing();
-    }
-    match /mkMetrics/{id} {
-      allow read, write: if isMarketing();
-    }
-
-    // ===== Company / org accounts (B2B) — team of members; joins via callable =====
-    match /orgs/{id} {
-      allow read: if isOwner(resource.data.ownerId)
-        || (isSignedIn() && request.auth.uid in resource.data.get('memberUids', [])) || isAdmin();
-      allow create: if isOwner(request.resource.data.ownerId)
-        && request.resource.data.memberUids == [request.auth.uid];
-      // owner edits name / removes members; joins are done server-side (joinOrg)
-      allow update: if isOwner(resource.data.ownerId) || isAdmin();
-      allow delete: if isOwner(resource.data.ownerId) || isSuperAdmin();
-    }
-
-    // ===== Recurring maintenance plans (B2B) — owner-managed; server sweeps =====
-    match /maintenancePlans/{id} {
-      allow read: if isOwner(resource.data.ownerId) || isAdmin();
-      allow create: if isOwner(request.resource.data.ownerId);
-      allow update, delete: if isOwner(resource.data.ownerId) || isAdmin();
-    }
-
-    // ===== B2B phase 3: vendor pool + RFQ — org-scoped, visible to the team =====
-    match /orgVendors/{id} {
-      allow read:   if isOrgMember(resource.data.orgId) || isAdmin();
-      allow create: if isOrgMember(request.resource.data.orgId);
-      allow update, delete: if isOrgMember(resource.data.orgId);
-    }
-    match /rfqs/{id} {
-      allow read:   if isOrgMember(resource.data.orgId) || isAdmin();
-      allow create: if isOrgMember(request.resource.data.orgId);
-      allow update, delete: if isOrgMember(resource.data.orgId);
-    }
-    // ===== B2B phase 4: business invoicing + credit — org-scoped =====
-    match /orgInvoices/{id} {
-      allow read:   if isOrgMember(resource.data.orgId) || isAdmin();
-      allow create: if isOrgMember(request.resource.data.orgId);
-      allow update, delete: if isOrgMember(resource.data.orgId);
     }
 
     // ===== CND — partner hardware store (cnd.homesang.pro). Storefront is public
@@ -1173,22 +560,6 @@ service cloud.firestore {
     match /cndCouponRedemptions/{id} {
       allow read: if isAdmin() || cndCap('finance');
       allow write: if false;
-    }
-    // HomeSang discount codes — public read (checkout validates); admin manages.
-    // A signed-in buyer may ONLY bump usedCount by exactly 1 (redemption), nothing else.
-    match /coupons/{id} {
-      allow read: if true;
-      allow create, delete: if isAdmin();
-      allow update: if isAdmin()
-        || (isSignedIn()
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedCount'])
-            && request.resource.data.usedCount == resource.data.usedCount + 1);
-    }
-    // Redemption log — a buyer may create+read only their own; admin sees all.
-    match /couponRedemptions/{id} {
-      allow read: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if isAdmin();
     }
     // Technician applications — a user submits/edits their OWN application (always
     // 'pending'); only admin flips it to approved/rejected (and grants the role).
