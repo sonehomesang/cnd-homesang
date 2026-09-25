@@ -1,0 +1,101 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // User profile images
+    match /users/{uid}/{file=**} {
+      allow read: if true;
+      allow write: if isOwner(uid) && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Admin uploads (admin editing any record's images) — written under the
+    // acting admin's own uid folder, so the owner check still applies.
+    match /admin/{uid}/{file=**} {
+      allow read: if true;
+      allow write: if isOwner(uid) && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Technician portfolio images
+    match /portfolio/{uid}/{file=**} {
+      allow read: if true;
+      allow write: if isOwner(uid) && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Job photos
+    match /jobs/{jobId}/{file=**} {
+      allow read: if true;
+      allow write: if isSignedIn() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Bid / on-site survey photos (technician-owned)
+    match /bids/{uid}/{file=**} {
+      allow read: if true;
+      allow write: if isOwner(uid) && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Chat attachments — PRIVATE conversation content (site photos, IDs, payment
+    // slips get shared here). Storage rules can't read Firestore, so we can't
+    // check conversation membership; at minimum require auth so an anonymous
+    // client can't enumerate/download a thread's folder (same stance as /slips).
+    match /chat/{conversationId}/{file=**} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Product images
+    match /products/{productId}/{file=**} {
+      allow read: if true;
+      allow write: if isSignedIn() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Shop images
+    match /shops/{shopId}/{file=**} {
+      allow read: if true;
+      allow write: if isSignedIn() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // CND partner store — product images (admin-uploaded)
+    match /cnd/slips/{file=**} {
+      allow read: if true;   // payment-transfer slips — guests can attach at checkout
+      allow write: if request.resource.size < 5 * 1024 * 1024 && request.resource.contentType.matches('image/.*');
+    }
+    match /cnd/{file=**} {
+      allow read: if true;
+      allow write: if isSignedIn() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Banners
+    match /banners/{file=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Payment slips
+    match /slips/{file=**} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // KYC documents (private)
+    match /kyc/{uid}/{file=**} {
+      allow read: if isOwner(uid);
+      allow write: if isOwner(uid) && request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // Rider licence / verification photos — the rider (owner) uploads; any
+    // signed-in user may read so admin can review the licence to approve the
+    // rider (stored at an unguessable per-uid path, like payment slips).
+    match /riders/{uid}/{file=**} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(uid) && request.resource.size < 10 * 1024 * 1024;
+    }
+  }
+}

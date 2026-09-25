@@ -1,0 +1,1242 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============ HELPERS ============
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+    // any admin tier (super / cs / cp) — may create + update
+    function isAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isSuperAdmin', false) == true ||
+         'admin' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('roles', []) ||
+         'cs_admin' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('roles', []) ||
+         'cp_admin' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('roles', []));
+    }
+    // CND staff capability from custom claim token.cnd (set by claimCndStaff).
+    function cndCap(cap) {
+      return isSignedIn() && request.auth.token.get('cnd', {}).get(cap, false) == true;
+    }
+    function cndStaffAny() {
+      return isSignedIn() && request.auth.token.get('cnd', {}).get('role', '') != '';
+    }
+    // marketing team — the 'marketing' role (MK Plan platform) OR any admin.
+    function isMarketing() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        ('marketing' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('roles', []) || isAdmin());
+    }
+    // caller is a member of the given company/org (B2B multi-building access)
+    function isOrgMember(orgId) {
+      return isSignedIn() && orgId != null
+        && exists(/databases/$(database)/documents/orgs/$(orgId))
+        && request.auth.uid in get(/databases/$(database)/documents/orgs/$(orgId)).data.get('memberUids', []);
+    }
+    // Super admin only (isSuperAdmin flag or legacy 'admin' role) — may delete
+    function isSuperAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isSuperAdmin', false) == true ||
+         'admin' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('roles', []));
+    }
+    // true when the caller owns the given shop (for product write authorization)
+    // the shop's owner (shop.ownerId) OR a linked staff member (user.shopId == shopId)
+    function ownsShop(shopId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/shops/$(shopId)) &&
+        (get(/databases/$(database)/documents/shops/$(shopId)).data.ownerId == request.auth.uid ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('shopId', '') == shopId));
+    }
+    // true when the caller is an admin-APPROVED and still-ACTIVE rider — the gate
+    // for claiming/advancing delivery tasks (a de-approved or paused rider can't).
+    function isApprovedRider() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/riders/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/riders/$(request.auth.uid)).data.get('approved', false) == true &&
+        get(/databases/$(database)/documents/riders/$(request.auth.uid)).data.get('active', true) != false;
+    }
+    // true when the caller owns the job a bid belongs to (accept/reject)
+    function ownsBidJob(jobId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/jobs/$(jobId)) &&
+        get(/databases/$(database)/documents/jobs/$(jobId)).data.customerId == request.auth.uid;
+    }
+    // Points the server says this user has EARNED (0 when they have no ledger
+    // yet) — the ceiling for how much they may ever commit to redemptions.
+    function loyaltyEarned(uid) {
+      return exists(/databases/$(database)/documents/loyaltyLedger/$(uid))
+        ? get(/databases/$(database)/documents/loyaltyLedger/$(uid)).data.get('earned', 0)
+        : 0;
+    }
+    // May the caller view/record a site's dossier? Reused to scope its assets:
+    // admin, the site owner, or anyone in the site's CURRENT sharedWith list.
+    // (get() by the fixed siteId a query filters on — the standard way to
+    // authorize a by-siteId list without exposing every asset to all users.)
+    function siteAllows(sid) {
+      return isAdmin() || (
+        exists(/databases/$(database)/documents/sites/$(sid)) && (
+          isOwner(get(/databases/$(database)/documents/sites/$(sid)).data.ownerId) ||
+          (isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/sites/$(sid)).data.get('sharedWith', []))
+        )
+      );
+    }
+
+    // review integrity: true when `uid` is one of a job's two parties — the
+    // customer or the assigned technician. Used to require that a reviewer was
+    // actually party to the job AND that the ratee is the OTHER party.
+    function jobParty(jid, uid) {
+      return exists(/databases/$(database)/documents/jobs/$(jid)) &&
+        (get(/databases/$(database)/documents/jobs/$(jid)).data.customerId == uid ||
+         get(/databases/$(database)/documents/jobs/$(jid)).data.get('assignedProviderId', '') == uid);
+    }
+    function taskCustomer(tid) {
+      return get(/databases/$(database)/documents/deliveryTasks/$(tid)).data.customerId;
+    }
+    function taskRider(tid) {
+      return get(/databases/$(database)/documents/deliveryTasks/$(tid)).data.get('assignedRiderId', '');
+    }
+    // true when the server recorded that `uid` bought `productId`. The index doc
+    // purchases/{productId}_{uid} is written admin-side by onOrderItemCreated.
+    function purchased(productId, uid) {
+      return exists(/databases/$(database)/documents/purchases/$(productId + '_' + uid));
+    }
+
+    // ============ USERS ============
+    match /users/{uid} {
+      // OWNER + ADMIN only. A users doc holds phone / email / full address, so
+      // it must NOT be readable by every signed-in account (that let any user
+      // harvest every user's contact details in bulk). Cross-user DISPLAY now
+      // reads projections instead: userCards/{uid} (name/image/referralCode),
+      // techContact/{uid} (a technician's service address), and the
+      // getJobContacts callable (a counterparty's phone, to job parties only).
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid) || isAdmin();
+      // Privilege fields (isSuperAdmin/roles/group) may ONLY be changed by a
+      // super admin — a self-owner or a non-super (cs/cp) admin cannot escalate.
+      // The owner may edit their own profile but not privilege/status/shop-link
+      // fields; any signed-in user may only bump the review-aggregate fields.
+      allow update: if isSuperAdmin()
+        || (isAdmin() && !request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(['isSuperAdmin', 'roles', 'group']))
+        || (isOwner(uid) && !request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(['isSuperAdmin', 'roles', 'group', 'status', 'shopId', 'shopRole', 'rating', 'reviewCount']))
+        // Root-admin safety net: the product owner's own account (identified by
+        // the OTP-verified auth identity — NOT a user-editable doc field, so it
+        // cannot be spoofed) may self-restore ONLY isSuperAdmin=true. Mirrors
+        // ROOT_ADMIN_PHONE_SUFFIXES in lib/rootAdmin.ts. This is what lets the
+        // client self-heal succeed instead of looping on a denied write.
+        || (isOwner(uid)
+              && request.auth.token.email == '8562059682000@homesang.local'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isSuperAdmin'])
+              && request.resource.data.isSuperAdmin == true);
+        // rating/reviewCount are written server-side by onReviewWritten (admin SDK).
+      allow delete: if isSuperAdmin();
+    }
+
+    // public-safe technician projection (name/photo/rating/specialties/service
+    // location only — NO phone/address/email). Lets logged-out visitors browse
+    // technicians without exposing the private users doc.
+    match /techCards/{id} {
+      allow read: if true;
+      allow create: if isOwner(id) || isAdmin();
+      // owner/admin edit; rating/reviewCount are written SERVER-SIDE by the
+      // onReviewWritten Cloud Function (admin SDK bypasses rules) — clients can't.
+      allow update: if isOwner(id) || isAdmin();
+      allow delete: if isOwner(id) || isSuperAdmin();
+    }
+
+    // public-safe card for EVERY user (name / image / referralCode only) — lets
+    // chat show a counterparty's name+photo and lets a referral code resolve to
+    // a uid WITHOUT reading the private users doc. Written by the owner (mirrors
+    // syncTechCard) or admin; carries NO phone / email / address.
+    match /userCards/{uid} {
+      allow read: if true;
+      allow create, update: if isOwner(uid) || isAdmin();
+      allow delete: if isOwner(uid) || isSuperAdmin();
+    }
+
+    // a technician's FULL service address (+coords), readable by any SIGNED-IN
+    // viewer (a logged-in customer needs to see where the tech works). Kept
+    // separate from the world-readable techCards (which carries only the coarse
+    // district) and from the private users doc. NO phone / email here.
+    match /techContact/{uid} {
+      allow read: if isSignedIn();
+      allow create, update: if isOwner(uid) || isAdmin();
+      allow delete: if isOwner(uid) || isSuperAdmin();
+    }
+
+    // ============ CATEGORIES (public read) ============
+    match /categories/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /roles/{id} {
+      // signed-in only — the RBAC/permission matrix is app-internal structure, no
+      // reason to expose it to anonymous recon
+      allow read: if isSignedIn();
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // account-type taxonomy (5 groups + sub-types): public read, admin write
+    match /userGroups/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /units/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /platformRates/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /banners/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // knowledge / safety video clips (Learn & Safety modules): public read, admin write
+    match /learnClips/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /menuItems/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /translations/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /appSettings/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /bankAccounts/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Slice 2 — pluggable payment / logistics providers: public read (checkout
+    // shows enabled ones), admin write.
+    match /paymentProviders/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /logisticsProviders/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Slice 3 — rider marketplace. Rider profile keyed by uid: the user manages
+    // their own; public/admin read for the queue + admin panel.
+    match /riders/{uid} {
+      // A rider profile holds the rider's phone, licence number + licence photo
+      // and plate. Readable only by the rider themselves and admin — NOT every
+      // signed-in user (was isSignedIn(), which let anyone harvest rider PII in
+      // bulk). The "new job" alert that used to list this collection client-side
+      // now runs server-side (onDeliveryTaskCreated), and the isApprovedRider()
+      // gate uses get(), which is unaffected by this read rule.
+      allow read: if isOwner(uid) || isAdmin();
+      // the owner opts in / edits their own profile, but only ADMIN may set the
+      // `approved` verification flag (a rider can't self-verify).
+      allow create: if (isOwner(uid) && request.resource.data.approved != true) || isAdmin();
+      allow update: if isAdmin()
+        || (isOwner(uid) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['approved']));
+      allow delete: if isSuperAdmin();
+    }
+
+    // Delivery tasks: created by the ordering customer (HomeSang Express order),
+    // claimed + advanced by the assigned rider, overseen by admin.
+    // Delivery tasks (HomeSang Express rider queue). Tightly scoped: the money
+    // fields (fee / codAmount) and the identity fields (orderId / customerId)
+    // are NEVER writable by a rider or customer — otherwise a rider could mint
+    // wallet balance by inflating `fee`. Status moves only along legal steps.
+    match /deliveryTasks/{id} {
+      // read: admin · the order's customer · the assigned rider · and an
+      // approved rider browsing the OPEN queue (needed to pick up work).
+      allow read: if isAdmin()
+        || isOwner(resource.data.customerId)
+        || isOwner(resource.data.get('assignedRiderId', ''))
+        || (resource.data.status == 'open' && isApprovedRider());
+      allow create: if isOwner(request.resource.data.customerId) || isAdmin();
+
+      allow update: if isAdmin()
+        // customer may only cancel their own delivery
+        || (isOwner(resource.data.customerId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+            && request.resource.data.status == 'cancelled')
+        // customer may add a tip for the rider (money OUT of the buyer's pocket,
+        // paid in full to the rider — never a discount, so only ever increases)
+        || (isOwner(resource.data.customerId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tip'])
+            && request.resource.data.tip is number
+            && request.resource.data.tip >= 0)
+        // the selling shop may cancel the task for its own order (order cancel cascade)
+        || (resource.data.get('shopId', '') != '' && ownsShop(resource.data.shopId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+            && request.resource.data.status == 'cancelled')
+        // the selling shop (or admin) releases a payment-held task into the queue
+        // once the slip is verified — may flip ONLY the heldForPayment flag.
+        || ((isAdmin() || (resource.data.get('shopId', '') != '' && ownsShop(resource.data.shopId)))
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['heldForPayment']))
+        // an approved+active rider CLAIMS an unassigned open task → 'accepted',
+        // writing only their own assignment + chain-of-custody snapshot. A task
+        // still held for payment must not be claimable.
+        || (isApprovedRider()
+            && resource.data.status == 'open'
+            && resource.data.get('heldForPayment', false) != true
+            && resource.data.get('assignedRiderId', '') == ''
+            && request.resource.data.status == 'accepted'
+            && request.resource.data.assignedRiderId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'assignedRiderId', 'assignedRiderName', 'acceptedAt',
+                           'riderPlate', 'riderPhone', 'riderLicenseNo']))
+        // the assigned rider RELEASES the task back to the open queue
+        || (isOwner(resource.data.get('assignedRiderId', ''))
+            && resource.data.status in ['accepted', 'picked_up']
+            && request.resource.data.status == 'open'
+            && !('assignedRiderId' in request.resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'assignedRiderId', 'assignedRiderName', 'acceptedAt',
+                           'riderPlate', 'riderPhone', 'riderLicenseNo']))
+        // the assigned rider advances their own task along legal steps only, and
+        // may attach proof-of-delivery + request a COD cash remittance. Note
+        // `codRemitted`/`remittedAt` are ADMIN-only (rider merely requests).
+        || (isOwner(resource.data.get('assignedRiderId', '')) && isApprovedRider()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 // NOTE: codCollected is deliberately ABSENT — a rider could
+                 // otherwise write 0 and erase the cash they owe. The debt is
+                 // derived from codAmount, which only admin/create can set.
+                 .hasOnly(['status', 'pickedUpAt', 'deliveredAt',
+                           'proofImage', 'recipientName', 'handoverOk',
+                           'remitRequested', 'remitRequestedAt', 'remitProof', 'remitMethod',
+                           // live location breadcrumbs while the rider opts in to sharing
+                           'riderLat', 'riderLng', 'locUpdatedAt'])
+            && (
+              (resource.data.status == 'accepted' && request.resource.data.status == 'picked_up')
+              || (resource.data.status == 'picked_up' && request.resource.data.status == 'delivered')
+              || request.resource.data.status == resource.data.status // metadata-only (remit request)
+            ));
+      allow delete: if isSuperAdmin();
+    }
+
+    // ============ JOBS ============
+    match /jobs/{id} {
+      // Signed-in only: a job carries the poster's name, full address and EXACT
+      // coordinates. Logged-out browsing uses the /jobCards projection below.
+      allow read: if isSignedIn();
+      // A job may never be assigned to its own customer: the wallet derives
+      // technician earnings from finalPrice on completed jobs, so self-dealing
+      // would let one account mint withdrawable balance out of nothing.
+      allow create: if (isOwner(request.resource.data.customerId) || isAdmin())
+        && request.resource.data.get('assignedProviderId', '') != request.resource.data.customerId;
+      // owner/admin edit anything (the owner sets finalPrice + assignment when
+      // accepting a bid); the ASSIGNED TECHNICIAN may progress the work but must
+      // not touch money/identity fields — otherwise they could inflate
+      // finalPrice on their own job and credit their own wallet. Any signed-in
+      // user may only bump the denormalized bid counter.
+      allow update: if (
+                       (isOwner(resource.data.customerId) || isAdmin() ||
+                        // (the tech legitimately writes paymentInstallments when
+                        // confirming receipt of an instalment — only the fields
+                        // the wallet derives earnings from are locked)
+                        (isOwner(resource.data.assignedProviderId) &&
+                         !request.resource.data.diff(resource.data).affectedKeys()
+                           .hasAny(['finalPrice', 'customerId', 'assignedProviderId'])))
+                       && request.resource.data.get('assignedProviderId', '') != request.resource.data.customerId
+                     ) ||
+                     (isSignedIn() &&
+                      request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['bidCount']));
+      allow delete: if isOwner(resource.data.customerId) || isSuperAdmin();
+    }
+
+    // Public, privacy-safe projection of the job feed (Explore + map for guests).
+    // Written ONLY by the onJobWritten Cloud Function — never carries the poster's
+    // name, full address, exact coordinates, or phones typed into free text.
+    match /jobCards/{id} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /quotations/{id} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(request.resource.data.technicianId);
+      allow update: if isOwner(resource.data.technicianId) || isAdmin();
+    }
+
+    // ============ BUILDING & ASSET REGISTRY ============
+    // Site Dossier records. Detailed data is PRIVATE, gated by an owner-managed
+    // permission list: owner + admin always; anyone the owner authorized via
+    // sharedWith (techs working there, family...). A shared viewer may RECORD
+    // (add rooms/detail) but never re-grant access or change ownership.
+    match /sites/{id} {
+      allow read: if resource == null || isAdmin()
+        || isOwner(resource.data.ownerId)
+        || (isSignedIn() && request.auth.uid in resource.data.get('sharedWith', []))
+        || isOrgMember(resource.data.get('orgId', null));
+      // admin creates (decision #1); owner may create own — future role expansion
+      allow create: if isAdmin() || isOwner(request.resource.data.ownerId);
+      allow update: if isAdmin() || isOwner(resource.data.ownerId)
+        || (isSignedIn() && request.auth.uid in resource.data.get('sharedWith', [])
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerId', 'sharedWith', 'createdBy']));
+      allow delete: if isSuperAdmin() || isOwner(resource.data.ownerId);
+    }
+
+    // Asset register (Phase 3): appliances/equipment tied to a site. Assets hold
+    // PRIVATE data (serials, per-category fields, parameter readings, service
+    // history), so access is scoped to the PARENT SITE's viewers via siteAllows()
+    // — not `isSignedIn()`. The app lists a site's assets with `where siteId==X`,
+    // and siteAllows(resource.data.siteId) get()s that one fixed site, so the
+    // by-siteId list is authorized without exposing every asset to all users.
+    // Reading the site's live sharedWith also means revoking a site viewer
+    // immediately revokes their asset access (no stale per-asset copy).
+    match /assets/{id} {
+      allow read: if siteAllows(resource.data.siteId);
+      allow create: if siteAllows(request.resource.data.siteId);
+      allow update: if siteAllows(resource.data.siteId)
+        && request.resource.data.siteId == resource.data.siteId; // can't move an asset to another site to dodge the check
+      allow delete: if isSuperAdmin() || isOwner(resource.data.ownerId);
+    }
+
+    match /bids/{id} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(request.resource.data.technicianId);
+      // the bidding technician may withdraw/edit own bid; the job owner may
+      // accept/reject (which also flips the other bids); admin override
+      allow update: if isOwner(resource.data.technicianId) ||
+                       ownsBidJob(resource.data.jobId) ||
+                       isAdmin();
+      // retained version history (G5): the bid's technician archives the
+      // outgoing version on each revise. Snapshots are immutable — read by any
+      // signed-in user (same as the bid), created by the owning tech, never
+      // updated or deleted.
+      match /versions/{v} {
+        allow read: if isSignedIn();
+        allow create: if isOwner(get(/databases/$(database)/documents/bids/$(id)).data.technicianId);
+      }
+    }
+
+    // jobWorkflows — legacy/unused in v2; lock to admin (was open to any signed-in)
+    match /jobWorkflows/{id} {
+      allow read: if isSignedIn();
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // job progress updates — only the job owner or the assigned technician may
+    // post; any signed-in user may read (UI further scopes who sees the feed)
+    match /jobUpdates/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.by == request.auth.uid &&
+        (
+          get(/databases/$(database)/documents/jobs/$(request.resource.data.jobId)).data.customerId == request.auth.uid ||
+          get(/databases/$(database)/documents/jobs/$(request.resource.data.jobId)).data.assignedProviderId == request.auth.uid
+        );
+      allow update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ============ COMMUNITY (ໂຮມເພື່ອນ) ============
+    match /posts/{id} {
+      allow read: if true; // public browse
+      allow create: if isOwner(request.resource.data.authorId) || isAdmin();
+      // author/admin edit anything; any signed-in user may only bump counters
+      allow update: if isOwner(resource.data.authorId) || isAdmin() ||
+                       (isSignedIn() &&
+                        request.resource.data.diff(resource.data).affectedKeys()
+                          .hasOnly(['likeCount', 'commentCount']));
+      allow delete: if isOwner(resource.data.authorId) || isSuperAdmin();
+    }
+
+    match /comments/{id} {
+      allow read: if true;
+      allow create: if isOwner(request.resource.data.authorId);
+      allow update: if isOwner(resource.data.authorId) || isAdmin();
+      allow delete: if isOwner(resource.data.authorId) || isSuperAdmin();
+    }
+
+    match /postLikes/{id} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(request.resource.data.uid);
+      allow delete: if isOwner(resource.data.uid);
+    }
+
+    // Y2 Slice B — shoppable short-video reels (public feed)
+    match /reels/{id} {
+      allow read: if true;
+      allow create: if isOwner(request.resource.data.authorId) || isAdmin();
+      // author/admin edit anything; any signed-in user may only bump the
+      // denormalized like/view counters
+      allow update: if isOwner(resource.data.authorId) || isAdmin() ||
+                       (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likeCount'])) ||
+                       (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount']));
+      allow delete: if isOwner(resource.data.authorId) || isSuperAdmin();
+    }
+    match /reelLikes/{id} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(request.resource.data.uid);
+      allow delete: if isOwner(resource.data.uid);
+    }
+
+    // Y3 Slice A — group buy campaigns (public). The owning shop (or admin)
+    // creates/edits/closes; any signed-in user may JOIN by adding ONLY their own
+    // uid to joinerIds (and, when that join reaches the target, flip status to
+    // 'unlocked' — but only if the real joiner count actually meets the target,
+    // so a fake unlock is impossible). Price/target/deadline stay immutable to joiners.
+    match /groupBuys/{id} {
+      allow read: if true;
+      allow create: if isAdmin() || ownsShop(request.resource.data.shopId);
+      allow update: if isAdmin() || ownsShop(resource.data.shopId)
+        || (isSignedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinerIds', 'status'])
+            // only additions to joiners, and the sole addition is the caller's own uid
+            && request.resource.data.joinerIds.hasAll(resource.data.joinerIds)
+            && resource.data.joinerIds.concat([request.auth.uid]).hasAll(request.resource.data.joinerIds)
+            && request.auth.uid in request.resource.data.joinerIds
+            // status may only become 'unlocked' when the real count meets the target
+            && (request.resource.data.status == resource.data.status
+                || request.resource.data.status == 'open'
+                || (request.resource.data.status == 'unlocked'
+                    && request.resource.data.joinerIds.size() >= resource.data.target)));
+      allow delete: if isAdmin() || ownsShop(resource.data.shopId);
+    }
+
+    // ============ SHOPS / PRODUCTS / ORDERS ============
+    match /shops/{id} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update: if isOwner(resource.data.ownerId) || isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /products/{id} {
+      allow read: if true;
+      // only the owning shop (or admin) may create/edit a product;
+      // any signed-in buyer may bump the denormalized soldCount (on purchase)
+      allow create: if ownsShop(request.resource.data.shopId) || isAdmin();
+      // only the owning shop / admin may edit a product. soldCount, stock and
+      // rating/reviewCount are written SERVER-SIDE by Cloud Functions
+      // (onOrderItemCreated / onOrderCancelled / onProductReviewWritten) — the
+      // client is not trusted to write them (prevents fake stock/sales/ratings).
+      allow update: if ownsShop(resource.data.shopId) || isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // product reviews — public read; buyer creates own; author/admin manage
+    match /productReviews/{id} {
+      allow read: if true;
+      // ONE review per product per rater, enforced through a deterministic id.
+      // With random ids a client could loop hundreds of 1-star reviews at a
+      // rival's product and the server-side average (onProductReviewWritten)
+      // would faithfully drop to 1.0.
+      // VERIFIED PURCHASE: the rater must have actually bought this product —
+      // the purchases/{productId}_{rater} index is written server-side on order,
+      // and excludes the selling shop's owner (so no self-review of own listing).
+      allow create: if isOwner(request.resource.data.raterId)
+        && id == request.resource.data.productId + '_' + request.resource.data.raterId
+        && purchased(request.resource.data.productId, request.resource.data.raterId);
+      allow update: if isOwner(resource.data.raterId) || isAdmin();
+      allow delete: if isOwner(resource.data.raterId) || isSuperAdmin();
+    }
+
+    // verified-purchase index (purchases/{productId}_{buyerId}) — the proof a
+    // productReviews create is gated on. Written ONLY by the onOrderItemCreated
+    // Cloud Function (admin SDK bypasses rules); clients can never forge one.
+    match /purchases/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /orders/{id} {
+      // An order carries the buyer's delivery address + phone, the amounts and
+      // the payment slip. Readable only by the parties to it — the buyer, the
+      // selling shop, the referring broker, the assigned Express rider — or
+      // admin. (was isSignedIn(): any logged-in user could list every order.)
+      // Each client query is filtered by one of these fields, so the
+      // resource-dependent rule below authorizes those lists while denying a
+      // broad "read all orders" sweep.
+      allow read: if isAdmin()
+        || isOwner(resource.data.customerId)
+        || isOwner(resource.data.get('brokerId', ''))
+        || ownsShop(resource.data.shopId)
+        || (resource.data.get('deliveryTaskId', null) != null
+            && exists(/databases/$(database)/documents/deliveryTasks/$(resource.data.deliveryTaskId))
+            && get(/databases/$(database)/documents/deliveryTasks/$(resource.data.deliveryTaskId)).data.get('assignedRiderId', '') == request.auth.uid);
+      // customer creates their own order. Loyalty redemption is capped at the
+      // goods subtotal so a tampered client can at most zero-out the goods (never
+      // create a negative total); cross-order balance enforcement is a future
+      // Cloud Function (same trust level as broker/commission, and the seller
+      // still verifies the paid amount against grandTotal).
+      allow create: if isOwner(request.resource.data.customerId)
+        // back-office economics are server-only (onOrderEconomics writes them via
+        // the admin SDK) — a crafted client must not inject commission/broker/fees.
+        && !request.resource.data.keys().hasAny(['commission', 'brokerId', 'brokerCommission', 'platformFees', 'platformFeeTotal'])
+        && (!('pointsRedeemed' in request.resource.data)
+            || (request.resource.data.pointsRedeemed is number
+                && request.resource.data.pointsRedeemed >= 0
+                && request.resource.data.pointsRedeemed <= request.resource.data.subtotal));
+      // customer + admin edit anything; the SELLING shop's owner/staff may change
+      // only fulfillment fields (status/payment-verify/tracking) — never totals or
+      // the customer — via the seller order queue (Slice 5).
+      allow update: if isAdmin()
+        // customer may only advance their own order's status (cancel / confirm
+        // receipt) — never paymentVerified or the totals/commission.
+        // NOTE: the per-step timeline stamps (confirmedAt/paymentVerifiedAt/
+        // deliveringAt/completedAt) are written alongside `status` by
+        // lib/orders.ts — they must stay in these allow-lists or the whole
+        // order lifecycle is permission-denied for shops, buyers and riders.
+        || (isOwner(resource.data.customerId) &&
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'deliveredAt', 'completedAt']))
+        || (ownsShop(resource.data.shopId) &&
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'paymentVerified', 'deliveredAt', 'trackingNumber', 'logisticsProviderName',
+                        'paymentVerifiedAt', 'confirmedAt', 'deliveringAt', 'completedAt']))
+        // the rider assigned to this order's linked HomeSang Express task may
+        // advance the order status/deliveredAt as they progress the delivery.
+        || (resource.data.deliveryTaskId != null
+            && exists(/databases/$(database)/documents/deliveryTasks/$(resource.data.deliveryTaskId))
+            && get(/databases/$(database)/documents/deliveryTasks/$(resource.data.deliveryTaskId)).data.assignedRiderId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'deliveredAt', 'deliveringAt', 'completedAt']));
+      allow delete: if isSuperAdmin();
+    }
+
+    // order line items — scoped to the order's customer, the selling shop's
+    // owner, or admin (was open to any signed-in user)
+    match /orderItems/{id} {
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.customerId == request.auth.uid ||
+        ownsShop(get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.shopId)
+      );
+      allow create: if isSignedIn() &&
+        get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.customerId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // refund / return claims — customer creates own, admin resolves
+    match /claims/{id} {
+      allow read: if isOwner(resource.data.customerId) || isAdmin();
+      allow create: if isOwner(request.resource.data.customerId) || isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // job disputes — a party raises, admin resolves
+    match /disputes/{id} {
+      // only the two parties (raiser + counterparty) and admin may read — a
+      // dispute names both people, the job and the complaint text. (was
+      // isSignedIn(): any logged-in user could list every dispute.) The
+      // by-jobId watch returns only disputes on that job, where the viewer is a
+      // party, so it still works for the people actually involved.
+      allow read: if isAdmin()
+        || isOwner(resource.data.raisedBy)
+        || isOwner(resource.data.get('counterpartyId', ''));
+      allow create: if isOwner(request.resource.data.raisedBy) || isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ============ COMMUNICATION ============
+    match /conversations/{id} {
+      // resource == null lets getOrCreateConversation check a not-yet-created
+      // conversation (get on a missing doc) before creating it
+      allow read: if isSignedIn() && (resource == null || request.auth.uid in resource.data.participants);
+      allow create: if isSignedIn() && request.auth.uid in request.resource.data.participants;
+      // A participant may update the thread's denormalized preview fields only.
+      // `participants` must stay immutable: every read rule here and on
+      // /messages keys off it, so rewriting it would hand the whole history to
+      // an outsider and cut the other party out of their own conversation.
+      allow update: if isSignedIn() && request.auth.uid in resource.data.participants
+        && request.resource.data.participants == resource.data.participants
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['lastMessage', 'lastSenderId', 'lastAt', 'lastReadAt', 'updatedAt',
+                       'names', 'images', 'jobId', 'jobTitle']);
+    }
+
+    match /messages/{id} {
+      // only conversation participants can read; sender creates own messages
+      allow read: if isSignedIn() &&
+        request.auth.uid in
+          get(/databases/$(database)/documents/conversations/$(resource.data.conversationId)).data.participants;
+      // The sender must also BE a participant of the target conversation.
+      // Conversation ids are derivable ([a,b].sort().join('_')) from uids anyone
+      // can read, so without this check any signed-in user could inject a
+      // message into a stranger's private thread — where it renders as if it
+      // came from the other party (impersonation / scam).
+      allow create: if isOwner(request.resource.data.senderId)
+        && request.auth.uid in
+             get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants;
+    }
+
+    match /notifications/{id} {
+      // recipient-only read/update. Create is allowed for any signed-in user (an
+      // action by one user notifies another), but hardened against spoofing: the
+      // link must be an INTERNAL app route (blocks external phishing URLs and
+      // protocol-relative //host links) and the title is length-capped. Admin
+      // (broadcasts) bypass. Full server-side creation is a future hardening.
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      // Clients no longer write here: user-to-user notifications go through the
+      // sendNotification callable, which stamps the true sender, rejects external
+      // links and rate-limits per sender (a notification becomes a real push, so
+      // direct client writes let anyone spoof an official HomeSang alert to every
+      // user). Admin keeps the direct path for broadcasts; the callable and the
+      // other Cloud Functions use the admin SDK, which bypasses rules.
+      allow create: if isAdmin();
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // favorites — private to the owner (allow get on a not-yet-existing doc so toggle can check)
+    match /favorites/{id} {
+      allow read: if isSignedIn() && (resource == null || resource.data.uid == request.auth.uid);
+      allow create: if isOwner(request.resource.data.uid);
+      allow delete: if isOwner(resource.data.uid);
+    }
+
+    // ============ REVIEWS ============
+    match /reviews/{id} {
+      allow read: if true;
+      // ONE review per job (or per delivery task) per rater — deterministic id,
+      // same anti-padding reason as productReviews. Job reviews are keyed
+      // `${jobId}_${raterId}`, rider reviews `${taskId}_${raterId}`.
+      // VERIFIED + NO SELF-REVIEW: the rater must be a party to the job/task and
+      // the ratee must be the OTHER party — you can't rate a job you weren't in,
+      // and you can't rate yourself.
+      allow create: if isOwner(request.resource.data.raterId)
+        && request.resource.data.raterId != request.resource.data.rateeId
+        && (
+          (request.resource.data.get('jobId', '') != ''
+            && id == request.resource.data.jobId + '_' + request.resource.data.raterId
+            && jobParty(request.resource.data.jobId, request.resource.data.raterId)
+            && jobParty(request.resource.data.jobId, request.resource.data.rateeId))
+          || (request.resource.data.get('taskId', '') != ''
+            && id == request.resource.data.taskId + '_' + request.resource.data.raterId
+            && exists(/databases/$(database)/documents/deliveryTasks/$(request.resource.data.taskId))
+            && request.resource.data.raterId == taskCustomer(request.resource.data.taskId)
+            && request.resource.data.rateeId == taskRider(request.resource.data.taskId))
+        );
+      allow update: if isOwner(resource.data.raterId) || isAdmin();
+      allow delete: if isOwner(resource.data.raterId) || isSuperAdmin();
+    }
+
+    // ============ MONEY ============
+    match /payments/{id} {
+      // owner + admin only (was isSignedIn(): any user could list all payments)
+      allow read: if isOwner(resource.data.userId) || isAdmin();
+      // a user may only create their own payment record; admin overrides
+      allow create: if isOwner(request.resource.data.userId) || isAdmin();
+      allow update: if isAdmin();
+    }
+
+    match /commissions/{id} {
+      allow read: if isAdmin();
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // technician earnings/withdrawals: owner reads own + creates withdrawal
+    // requests; only admin approves/changes status.
+    match /walletTransactions/{id} {
+      allow read: if isOwner(resource.data.uid) || isAdmin();
+      // owner may ONLY request withdrawals; balance-crediting 'adjustment' rows
+      // are admin-only (else a user could credit their own derived balance).
+      // A withdrawal must be a POSITIVE number and start as 'pending': a
+      // negative amount would subtract from the withdrawn/pending total and so
+      // INCREASE the derived available balance (mint), and a self-set status
+      // would skip admin approval.
+      allow create: if isAdmin()
+        || (isOwner(request.resource.data.uid)
+            && request.resource.data.type == 'withdrawal'
+            && request.resource.data.amount is number
+            && request.resource.data.amount > 0
+            && request.resource.data.get('status', 'pending') == 'pending');
+      allow update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // CUSTOMER wallet (spendable balance) — separate from the technician
+    // earnings wallet above. Balance = Σ verified topups − Σ spends.
+    match /walletTopups/{id} {
+      allow read: if isOwner(resource.data.uid) || isAdmin();
+      // a customer may request a PENDING top-up for THEMSELVES (positive amount,
+      // not admin-flagged); only an admin may create a pre-verified / direct one.
+      allow create: if isAdmin()
+        || (isOwner(request.resource.data.uid)
+            && request.resource.data.get('status', 'pending') == 'pending'
+            && request.resource.data.amount is number
+            && request.resource.data.amount > 0
+            && !('byAdmin' in request.resource.data));
+      allow update: if isAdmin();   // verify / reject
+      allow delete: if isSuperAdmin();
+    }
+    match /walletSpends/{id} {
+      allow read: if isOwner(resource.data.uid) || isAdmin();
+      // written ONLY by the spendWallet Cloud Function (admin SDK) — a client can
+      // never create a spend (which would let it fake having paid from balance).
+      allow write: if false;
+    }
+
+    match /servicePricing/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // reference price catalog (materials + labor "ລາຄາກາງ"): public read, admin write
+    match /priceCatalog/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // BOM templates (preset cost bundles): public read, admin write
+    match /bomTemplates/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // per-technician full-quote presets — each tech manages only their own
+    match /quoteTemplates/{id} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(request.resource.data.ownerId);
+      allow update, delete: if isOwner(resource.data.ownerId) || isAdmin();
+    }
+
+    // HomeSang per-category completion-inspection standards (checklist + warranty)
+    match /inspectionTemplates/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // mid-job change-orders: assigned tech proposes, job owner approves/rejects
+    match /jobVariations/{id} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(request.resource.data.techId);
+      allow update: if isAdmin() ||
+        isOwner(get(/databases/$(database)/documents/jobs/$(resource.data.jobId)).data.customerId);
+      allow delete: if isSuperAdmin();
+    }
+
+    // app-wide settings (single doc 'app'): public read, admin write.
+    // NOTE: everything under /settings is world-readable — never put secrets here
+    // (OTP provider credentials live in /secureConfig below). The public
+    // 'otpProvider' doc only names which provider the sign-up flow should use.
+    match /settings/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Sensitive config (e.g. Twilio OTP credentials). NOT publicly readable —
+    // super-admin only for the back-office editor; Cloud Functions read it with
+    // the admin SDK (which bypasses rules) to call Twilio server-side.
+    match /secureConfig/{id} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    // Self-managed OTP codes (hashed) — written/read ONLY by Cloud Functions via
+    // the admin SDK. No client access at all: the plaintext code is never here,
+    // but denying reads also hides the attempt counter / timing.
+    match /otpCodes/{id} {
+      allow read, write: if false;
+    }
+
+    // i18n string overrides: public read, admin write
+    match /translations/{key} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ============ MEMBERSHIPS ============
+    match /membershipPlans/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /subscriptions/{id} {
+      // owner + admin only (was isSignedIn(): any user could list all subs)
+      allow read: if isOwner(resource.data.userId) || isAdmin();
+      allow create: if isOwner(request.resource.data.userId);
+      allow update: if isAdmin();
+    }
+
+    // ============ LOYALTY POINTS ============
+    // Server-held earning ledger: written ONLY by the onOrderLoyaltyLedger
+    // Cloud Function (admin SDK bypasses rules), so a client can never inflate
+    // the points it is allowed to spend.
+    match /loyaltyLedger/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow write: if false;
+    }
+
+    // Running total of points the user has actually committed. The client
+    // increments this inside a TRANSACTION at checkout; the ceiling below is what
+    // makes redemption safe — rules cannot sum across orders, but they can
+    // compare one running total against the server-written ledger. Two
+    // simultaneous checkouts contend on this single doc, so the second one fails
+    // instead of spending the same points twice. Monotonic (never decreases).
+    match /loyaltySpend/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid)
+        && request.resource.data.spent is number
+        && request.resource.data.spent >= 0
+        && request.resource.data.spent <= loyaltyEarned(uid);
+      allow update: if isOwner(uid)
+        && request.resource.data.spent is number
+        && request.resource.data.spent >= resource.data.spent
+        && request.resource.data.spent <= loyaltyEarned(uid);
+      allow delete: if isSuperAdmin();
+    }
+
+    // referrals — referee creates the link; both parties + admin can read
+    match /referrals/{id} {
+      allow read: if isSignedIn() &&
+        (resource.data.referrerId == request.auth.uid ||
+         resource.data.refereeId == request.auth.uid || isAdmin());
+      // The doc ID must be the deterministic `${referrerId}_${refereeId}` pair,
+      // so one referee can be credited to one referrer exactly ONCE. Without
+      // this, a client could addDoc() the same pair under random ids and mint an
+      // unlimited referral reward.
+      allow create: if isOwner(request.resource.data.refereeId)
+        && request.resource.data.referrerId != request.resource.data.refereeId
+        && id == request.resource.data.referrerId + '_' + request.resource.data.refereeId;
+      allow update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ============ ADMIN ============
+    // immutable audit trail of admin create/update/delete actions
+    match /auditLogs/{id} {
+      allow read: if isSuperAdmin();
+      allow create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    match /errorLogs/{id} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Per-user activity trail (signup/login/logout + admin actions on the user).
+    // Admin reads any; a user may read only their own (query filtered by uid).
+    // Any signed-in user may append (their own events; an admin logs actions on
+    // another user). Entries are immutable except to a super admin (cleanup).
+    match /userActivity/{id} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow create: if isSignedIn();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    match /trialUsers/{id} {
+      allow read: if isAdmin();
+      allow create, update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /surveyTemplates/{id} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin();
+      // admin edits anything; any signed-in user (technician) may only bump
+      // usage / rating aggregate fields after using a template in a quote
+      allow update: if isAdmin() ||
+                       (isSignedIn() &&
+                        request.resource.data.diff(resource.data).affectedKeys()
+                          .hasOnly(['usageCount', 'rating', 'ratingCount', 'updatedAt']));
+      allow delete: if isSuperAdmin();
+    }
+
+    match /deliveryAddresses/{id} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isOwner(request.resource.data.userId);
+      allow update, delete: if isOwner(resource.data.userId);
+    }
+
+    // ===== MK Plan — internal Marketing Platform (marketing role or admin) =====
+    // Content calendar. Later mk* collections (scripts/assets/partners/campaigns)
+    // follow the same gate.
+    match /mkContent/{id} {
+      allow read, create, update: if isMarketing();
+      allow delete: if isMarketing();
+    }
+    match /mkScripts/{id} {
+      allow read, create, update, delete: if isMarketing();
+    }
+    match /mkAssets/{id} {
+      allow read, create, update, delete: if isMarketing();
+    }
+    match /mkPartners/{id} {
+      allow read, create, update, delete: if isMarketing();
+    }
+    match /mkCampaigns/{id} {
+      allow read, create, update, delete: if isMarketing();
+    }
+    match /mkMetrics/{id} {
+      allow read, write: if isMarketing();
+    }
+
+    // ===== Company / org accounts (B2B) — team of members; joins via callable =====
+    match /orgs/{id} {
+      allow read: if isOwner(resource.data.ownerId)
+        || (isSignedIn() && request.auth.uid in resource.data.get('memberUids', [])) || isAdmin();
+      allow create: if isOwner(request.resource.data.ownerId)
+        && request.resource.data.memberUids == [request.auth.uid];
+      // owner edits name / removes members; joins are done server-side (joinOrg)
+      allow update: if isOwner(resource.data.ownerId) || isAdmin();
+      allow delete: if isOwner(resource.data.ownerId) || isSuperAdmin();
+    }
+
+    // ===== Recurring maintenance plans (B2B) — owner-managed; server sweeps =====
+    match /maintenancePlans/{id} {
+      allow read: if isOwner(resource.data.ownerId) || isAdmin();
+      allow create: if isOwner(request.resource.data.ownerId);
+      allow update, delete: if isOwner(resource.data.ownerId) || isAdmin();
+    }
+
+    // ===== B2B phase 3: vendor pool + RFQ — org-scoped, visible to the team =====
+    match /orgVendors/{id} {
+      allow read:   if isOrgMember(resource.data.orgId) || isAdmin();
+      allow create: if isOrgMember(request.resource.data.orgId);
+      allow update, delete: if isOrgMember(resource.data.orgId);
+    }
+    match /rfqs/{id} {
+      allow read:   if isOrgMember(resource.data.orgId) || isAdmin();
+      allow create: if isOrgMember(request.resource.data.orgId);
+      allow update, delete: if isOrgMember(resource.data.orgId);
+    }
+    // ===== B2B phase 4: business invoicing + credit — org-scoped =====
+    match /orgInvoices/{id} {
+      allow read:   if isOrgMember(resource.data.orgId) || isAdmin();
+      allow create: if isOrgMember(request.resource.data.orgId);
+      allow update, delete: if isOrgMember(resource.data.orgId);
+    }
+
+    // ===== CND — partner hardware store (cnd.homesang.pro). Storefront is public
+    //       read; only admin manages the catalog. (Own admin lives at /cnd/admin.)
+    match /cndCategories/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /cndProducts/{id} {
+      allow read: if true;
+      allow write: if isAdmin() || cndCap('catalog');
+    }
+    match /cndConfig/{id} {
+      allow read: if true;               // storefront needs the global install % + delivery fee
+      allow write: if isAdmin();         // store settings = owner only
+    }
+    match /cndTechs/{id} {
+      allow read: if true;               // checkout lists active techs
+      allow write: if isAdmin() || cndCap('catalog');
+    }
+    match /cndOrders/{id} {
+      // staff/POS may write any shape; a guest checkout must be a well-formed online order
+      // (anti-spam: bounded items, non-negative total, pending payment, fresh 'new' status).
+      // If a signed-in customer stamps their own uid, it must match them (no spoofing).
+      allow create: if isAdmin() || cndCap('pos') || (
+        request.resource.data.channel in ['online', 'booking', 'urgent']
+        && request.resource.data.status == 'new'
+        && request.resource.data.paymentStatus == 'pending'
+        && request.resource.data.total is number
+        && request.resource.data.total >= 0
+        && request.resource.data.total < 1000000000
+        && request.resource.data.items is list
+        && request.resource.data.items.size() > 0
+        && request.resource.data.items.size() <= 100
+        && (!('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid)
+        // server-only fields can never come from the browser: a guest could otherwise
+        // pre-set stockApplied/couponApplied/reviewDone to skip the stock decrement,
+        // coupon counting or price review, or forge the payment confirmation
+        && !request.resource.data.keys().hasAny(['stockApplied', 'couponApplied', 'couponReject', 'couponAllowed', 'couponRedemptionId', 'reviewDone', 'reviewFlags', 'reviewReasons', 'reviewedBy', 'reviewedAt', 'paidAt', 'paidBy', 'paidAmount', 'cashier', 'shiftId'])
+        && request.resource.data.subtotal is number && request.resource.data.subtotal >= 0
+        && (!('discount' in request.resource.data) || (request.resource.data.discount is number && request.resource.data.discount >= 0 && request.resource.data.discount <= request.resource.data.subtotal))
+        && (!('couponDiscount' in request.resource.data) || (request.resource.data.couponDiscount is number && request.resource.data.couponDiscount >= 0))
+      );
+      // ninesang P4: the order owner may read their own order (tracking + chat).
+      allow read: if isAdmin() || cndStaffAny()
+        || (isSignedIn() && resource.data.get('uid', '') == request.auth.uid);
+      // the order owner may ONLY bump the chat-meta fields (for admin's unread hint);
+      // everything else (status, payment, install…) stays staff-only.
+      allow update: if isAdmin() || cndCap('pos')
+        || (isSignedIn() && resource.data.get('uid', '') == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['lastMessageAt', 'lastMessageFrom']));
+      allow delete: if isAdmin() || cndCap('pos');
+
+      // Order chat thread — customer ↔ shop/tech.
+      match /messages/{mid} {
+        function order() { return get(/databases/$(database)/documents/cndOrders/$(id)).data; }
+        function ownsOrder() { return isSignedIn() && order().get('uid', '') == request.auth.uid; }
+        allow read: if isAdmin() || cndStaffAny() || ownsOrder();
+        // a customer posts as 'customer' on their own order; staff post as 'shop'.
+        allow create: if request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && (
+            ((isAdmin() || cndStaffAny()) && request.resource.data.from == 'shop')
+            || (ownsOrder() && request.resource.data.from == 'customer')
+          );
+        allow update, delete: if isAdmin();
+      }
+    }
+    match /cndShifts/{id} {
+      allow read, write: if isAdmin() || cndCap('pos');   // POS cash sessions (cashier)
+    }
+    match /cndStockMoves/{id} {
+      allow read: if isAdmin() || cndStaffAny();
+      allow create: if isSignedIn();     // sale-logging from POS/checkout (signed-in cashier/buyer)
+      allow update, delete: if isAdmin();
+    }
+    match /cndBranches/{id} {
+      allow read: if true;               // storefront/POS may show branch names
+      allow write: if isAdmin() || cndCap('catalog');
+    }
+    match /cndUnits/{id} {
+      allow read: if true;               // storefront/POS/labels render unit names
+      allow write: if isAdmin() || cndCap('catalog');
+    }
+    // back-office RBAC — role defs + staff registry
+    match /cndRoles/{id} {
+      allow read: if isSignedIn();       // staff resolve their own role's sections
+      allow write: if isAdmin() || cndCap('staff');
+    }
+    match /cndStaff/{id} {
+      // PII (names/phones): only the owner or a staff-manager may read the roster. Other
+      // staff resolve their OWN role server-side via the claimCndStaff callable, so they
+      // never need to read this collection — closes the signed-in-user PII leak.
+      allow read: if isAdmin() || cndCap('staff');
+      allow write: if isAdmin() || cndCap('staff');
+    }
+    match /cndReturns/{id} {
+      allow read: if isAdmin() || cndStaffAny();
+      allow write: if isAdmin() || cndCap('refund');
+    }
+    match /cndSuppliers/{id} {
+      allow read: if isAdmin() || cndStaffAny();
+      allow write: if isAdmin() || cndCap('catalog');
+    }
+    match /cndPurchaseOrders/{id} {
+      allow read: if isAdmin() || cndStaffAny();
+      allow write: if isAdmin() || cndCap('catalog');
+    }
+    match /cndExpenses/{id} {
+      allow read: if isAdmin() || cndCap('finance');
+      allow write: if isAdmin() || cndCap('finance');
+    }
+    match /cndCoupons/{id} {
+      allow read: if true;               // checkout validates codes
+      allow create, delete: if isAdmin() || cndCap('finance');
+      // admin/finance only. Redemptions are counted server-side (onCndOrderCreated, admin
+      // SDK). The old 'signed-in buyer may bump usedCount by 1' path let any account
+      // exhaust a limited code without buying, and guests could never be counted.
+      allow update: if isAdmin() || cndCap('finance');
+    }
+    // Coupon redemption log — written ONLY by onCndOrderCreated (admin SDK).
+    match /cndCouponRedemptions/{id} {
+      allow read: if isAdmin() || cndCap('finance');
+      allow write: if false;
+    }
+    // HomeSang discount codes — public read (checkout validates); admin manages.
+    // A signed-in buyer may ONLY bump usedCount by exactly 1 (redemption), nothing else.
+    match /coupons/{id} {
+      allow read: if true;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedCount'])
+            && request.resource.data.usedCount == resource.data.usedCount + 1);
+    }
+    // Redemption log — a buyer may create+read only their own; admin sees all.
+    match /couponRedemptions/{id} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+    // Technician applications — a user submits/edits their OWN application (always
+    // 'pending'); only admin flips it to approved/rejected (and grants the role).
+    match /techApplications/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create, update: if (isOwner(uid) && request.resource.data.status == 'pending') || isAdmin();
+      allow delete: if isAdmin();
+    }
+    // Verification quiz — the answer key is ADMIN-ONLY (a taker must not see it).
+    match /techQuizQuestions/{id} {
+      allow read, write: if isAdmin();
+    }
+    // Answer-free public projection — anyone may read to take the quiz.
+    match /techQuizPublic/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    // Attempts — a taker writes/reads only their own; admin grades (reads all).
+    match /techQuizAttempts/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create, update: if isOwner(uid) || isAdmin();
+      allow delete: if isAdmin();
+    }
+    match /cndBanners/{id} {
+      allow read: if true;               // storefront shows the slides
+      allow write: if isAdmin() || cndCap('finance');
+    }
+    // public projections (safe non-PII slices of orders) — guest storefront reads
+    match /cndReviewCards/{id} {
+      allow read: if true;
+      allow write: if isAdmin() || cndStaffAny();
+    }
+    match /cndCustomerCards/{id} {
+      allow read: if true;               // customer looks up own tier by phone at checkout
+      allow write: if isAdmin() || cndStaffAny();
+    }
+    match /cndAuditLogs/{id} {
+      allow read: if isAdmin() || cndCap('staff');
+      allow create: if isAdmin() || cndStaffAny();     // staff actions log themselves
+      allow update, delete: if isAdmin();              // append-only for staff
+    }
+    match /cndZones/{id} {
+      allow read: if true;               // checkout shows zones + fees
+      allow write: if isAdmin();
+    }
+    match /cndBanks/{id} {
+      allow read: if true;               // checkout shows banks + QR on demand
+      allow write: if isAdmin() || cndCap('finance');
+    }
+  }
+}

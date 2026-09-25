@@ -1,0 +1,20 @@
+{
+  "name": "functions",
+  "description": "HomeSang Cloud Functions (web push sender)",
+  "private": true,
+  "engines": {
+    "node": "20"
+  },
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^6.3.2",
+    "twilio": "^5.13.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
