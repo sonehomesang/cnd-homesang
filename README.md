@@ -48,8 +48,18 @@ Serves **https://cnd.homesang.pro**.
       2 / cndCustomerCards 5. (cndProducts 9 / cndCategories 4 pre-existing, so catalog re-seed
       skipped.) Visual-verified: storefront shows branded products + a customer-reviews section,
       no permission-denied. All rows are `__mock`-stamped → the go-live clear removes them.
-- [ ] **Stage 4 — cutover**: point `cnd.homesang.pro` at the new hosting; delete CND from `homesang-v2`.
-- [ ] **Stage 5 — verify + docs**.
+- [x] **Stage 4a — Firebase Hosting live (2026-09-25)**: deployed `dist` to the cnd-homesang
+      default site → **https://cnd-homesang.web.app** / **cnd-homesang.firebaseapp.com**. Verified
+      (via the firebaseapp.com mirror; `.web.app` curl fails with QUIC on this machine): CND title,
+      SPA rewrite `/cnd/admin`→200, hashed assets 200. `npm run deploy` = fresh build + hosting
+      deploy. Does NOT touch cnd.homesang.pro (still on homesang-v2-prod).
+- [ ] **Stage 4b — custom-domain cutover**: (1) OLD project console `homesang-v2-prod` → Hosting →
+      remove custom domain `cnd.homesang.pro` (a domain lives on one site only); (2) NEW project
+      console `cnd-homesang` → Hosting → Add custom domain `cnd.homesang.pro`; (3) update DNS TXT
+      `hosting-site` from `homesang-v2-prod` → `cnd-homesang` (A stays 199.36.158.100). This is the
+      production switch. Then delete CND from `homesang-v2` (app/cnd, lib/cnd, components/cnd, 4 fn,
+      rules blocks, 3 reverse refs).
+- [ ] **Stage 5 — verify both prod + docs**.
 
 ## ⚠️ Before running / deploying
 1. Put the real Firebase config (6 values) from the `cnd-homesang` project into `.env.local`
