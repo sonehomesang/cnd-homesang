@@ -37,8 +37,17 @@ Serves **https://cnd.homesang.pro**.
       which bypasses them). Verified: emulator compiles + `npm run test:rules:cnd` 61/0.
       **Deployed to cnd-homesang** (2026-09-25) + live-verified: storefront on served dist
       still loads 9 products / config / categories with no permission-denied.
+- [x] **Auth — Email/Password enabled** (owner, 2026-09-25): unblocks admin login + client-SDK seeding.
 - [ ] **Stage 2b (later) — hosting** after runtime verification.
-- [ ] **Stage 3 — data**: re-seed mock into the new project (discard old test order CND-20017).
+- [x] **Stage 3 — data (full demo seed done, 2026-09-25)**: ran the real client seeder
+      `lib/cnd/mockSeed.ts::seedCndDemo` against cnd-homesang by esbuild-bundling it for Node
+      and signing in as the admin (email/pw) so `isAdmin()` authorizes writes under the trimmed
+      rules (no service-account key / IAM). Seeded: cndTechs 8, cndBranches 2, cndRoles/cndStaff
+      4/4, cndSuppliers 4, cndExpenses 4, cndCoupons 3, cndBanners 4, cndZones 5, cndBanks 2,
+      cndOrders 30 (online+POS), cndShifts 3 (X/Z), cndPurchaseOrders 3, + rebuilt cndReviewCards
+      2 / cndCustomerCards 5. (cndProducts 9 / cndCategories 4 pre-existing, so catalog re-seed
+      skipped.) Visual-verified: storefront shows branded products + a customer-reviews section,
+      no permission-denied. All rows are `__mock`-stamped → the go-live clear removes them.
 - [ ] **Stage 4 — cutover**: point `cnd.homesang.pro` at the new hosting; delete CND from `homesang-v2`.
 - [ ] **Stage 5 — verify + docs**.
 
