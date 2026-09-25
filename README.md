@@ -35,7 +35,8 @@ Serves **https://cnd.homesang.pro**.
       marketplace-social blocks + 8 now-dead helpers. Keep set derived from a client-code grep
       of every `collection()/doc()` ref (rules only govern the client; functions use admin SDK
       which bypasses them). Verified: emulator compiles + `npm run test:rules:cnd` 61/0.
-      **Not yet deployed** — deploy with `npm run deploy:rules` after runtime verify.
+      **Deployed to cnd-homesang** (2026-09-25) + live-verified: storefront on served dist
+      still loads 9 products / config / categories with no permission-denied.
 - [ ] **Stage 2b (later) — hosting** after runtime verification.
 - [ ] **Stage 3 — data**: re-seed mock into the new project (discard old test order CND-20017).
 - [ ] **Stage 4 — cutover**: point `cnd.homesang.pro` at the new hosting; delete CND from `homesang-v2`.
