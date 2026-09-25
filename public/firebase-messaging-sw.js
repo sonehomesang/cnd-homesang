@@ -3,12 +3,12 @@ importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js
 importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js');
 
 firebase.initializeApp({
-  apiKey: 'AIzaSyDMizPAqFff5eVjCGFLEFZ0p7mPWUq5oSQ',
-  authDomain: 'homesang-v2-prod.firebaseapp.com',
-  projectId: 'homesang-v2-prod',
-  storageBucket: 'homesang-v2-prod.firebasestorage.app',
-  messagingSenderId: '1003163681364',
-  appId: '1:1003163681364:web:4c5da8132726664a2563c1',
+  apiKey: 'AIzaSyCsyMkNQaiCRHQgPPba8JpkVYscPtTjoQQ',
+  authDomain: 'cnd-homesang.firebaseapp.com',
+  projectId: 'cnd-homesang',
+  storageBucket: 'cnd-homesang.firebasestorage.app',
+  messagingSenderId: '504639839337',
+  appId: '1:504639839337:web:10f54518ccbe695c5f16f8',
 });
 
 const messaging = firebase.messaging();
@@ -16,7 +16,7 @@ const messaging = firebase.messaging();
 messaging.onBackgroundMessage((payload) => {
   const n = payload.notification || {};
   const data = payload.data || {};
-  self.registration.showNotification(n.title || 'HomeSang', {
+  self.registration.showNotification(n.title || 'CND-HomeSang', {
     body: n.body || '',
     icon: '/favicon.png',
     data: { link: (data.link || (payload.fcmOptions && payload.fcmOptions.link)) || '/' },
