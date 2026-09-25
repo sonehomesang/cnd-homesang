@@ -24,8 +24,13 @@ Serves **https://cnd.homesang.pro**.
       closure. Remaining: app/=19, lib/=62, components/=13. `tsc --noEmit` clean.
       Subpage URLs still `/cnd/*` (clean-URL promotion deferred). Functions/rules NOT yet
       pruned (Stage 2). Runtime not yet verified (needs real Firebase config).
-- [ ] **Stage 2 — backend**: keep only the 4 CND functions + OTP; CND-only `firestore.rules`;
-      set up Hosting (Firebase site or Hostinger VPS).
+- [x] **Stage 2 — backend (functions)**: `functions/src/index.ts` 1932→589 lines — kept 9
+      exports (5 OTP over Twilio + 4 CND triggers) + their helpers; removed ~24 HomeSang
+      functions. functions build (tsc) clean. **firestore.rules kept FULL on purpose**
+      (superset): CND reuses ~24 shared collections via kept shared libs, so pruning rules
+      would deny them; rules for HomeSang-only collections that won't exist here are no-ops
+      (no security downside). Trim later after runtime verify. Hosting not set up yet.
+- [ ] **Stage 2b (later) — hosting + optional rules trim** after runtime verification.
 - [ ] **Stage 3 — data**: re-seed mock into the new project (discard old test order CND-20017).
 - [ ] **Stage 4 — cutover**: point `cnd.homesang.pro` at the new hosting; delete CND from `homesang-v2`.
 - [ ] **Stage 5 — verify + docs**.
