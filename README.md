@@ -18,8 +18,12 @@ Serves **https://cnd.homesang.pro**.
 - [x] **Stage 1a — scaffold**: cloned `apps/mobile` → here; repointed identity to CND
       (`package.json` name+deploy scripts, `.firebaserc`, `app.json`) and `.env.local` to
       placeholders for the **new** Firebase project (does NOT point at homesang-v2-prod).
-- [ ] **Stage 1b — prune**: remove HomeSang-only routes/lib/functions/rules until CND-only,
-      promote `app/cnd/*` routes to the app root (`/` instead of `/cnd`), `tsc` clean each step.
+- [x] **Stage 1b — prune (app/lib/components)**: `isCndHost()` returns true; root `/`
+      re-exports the CND storefront; CND-only `app/_layout.tsx` (Auth+i18n+Theme only);
+      removed the `(tabs)` group; deleted 260 HomeSang-only files via transitive import
+      closure. Remaining: app/=19, lib/=62, components/=13. `tsc --noEmit` clean.
+      Subpage URLs still `/cnd/*` (clean-URL promotion deferred). Functions/rules NOT yet
+      pruned (Stage 2). Runtime not yet verified (needs real Firebase config).
 - [ ] **Stage 2 — backend**: keep only the 4 CND functions + OTP; CND-only `firestore.rules`;
       set up Hosting (Firebase site or Hostinger VPS).
 - [ ] **Stage 3 — data**: re-seed mock into the new project (discard old test order CND-20017).
